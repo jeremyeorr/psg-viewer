@@ -1,4 +1,4 @@
-import { channelColor, formatDuration } from "../domain/channels.js?v=20260522-rml2";
+import { channelColor, formatDuration, normalizeChannelLabel } from "../domain/channels.js?v=20260522-yaxis";
 
 const LEFT_GUTTER = 154;
 const TOP_AXIS = 22;
@@ -110,6 +110,65 @@ function isPositionEvent(event) {
 
 function addRegion(regions, item, x, y, width, height, label, kind) {
   regions.push({ x, y, width, height, label, kind, item });
+}
+
+function clinicalAxisKind(channel) {
+  const normalized = normalizeChannelLabel(channel.label);
+  const compact = normalized.replace(/\s+/g, "");
+  if (compact.includes("spo2") || compact.includes("sao2") || normalized.includes("saturation") || normalized.includes("oxygen saturation")) {
+    return "spo2";
+  }
+  if (compact.startsWith("tcco2") || compact === "tco2" || normalized.startsWith("tco2 ") || normalized.includes(" tco2")) {
+    return "tco2";
+  }
+  return "";
+}
+
+function formatAxisValue(value, span, kind) {
+  if (!Number.isFinite(value)) return "";
+  const decimals = kind === "spo2"
+    ? span <= 3 ? 1 : 0
+    : span < 1 ? 2 : span < 10 ? 1 : 0;
+  return value.toFixed(decimals).replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
+}
+
+function drawClinicalAxis(context, channel, top, laneHeight, plotLeft, plotRight, dataMin, dataMax, yForValue) {
+  const kind = clinicalAxisKind(channel);
+  if (!kind || laneHeight < 34 || !Number.isFinite(dataMin) || !Number.isFinite(dataMax) || dataMin === dataMax) return;
+
+  const span = Math.abs(dataMax - dataMin);
+  const tickValues = [dataMax, (dataMax + dataMin) / 2, dataMin];
+  const tickLength = laneHeight < 54 ? 5 : 8;
+
+  context.save();
+  context.font = laneHeight < 54 ? "9px system-ui, sans-serif" : "10px system-ui, sans-serif";
+  context.textAlign = "right";
+  context.textBaseline = "middle";
+  for (const value of tickValues) {
+    const y = yForValue(value);
+    if (y < top + 4 || y > top + laneHeight - 4) continue;
+    context.strokeStyle = "#98a2b3";
+    context.beginPath();
+    context.moveTo(plotLeft - tickLength, y + 0.5);
+    context.lineTo(plotLeft + tickLength, y + 0.5);
+    context.stroke();
+
+    context.strokeStyle = "#eef2f6";
+    context.beginPath();
+    context.moveTo(plotLeft + tickLength, y + 0.5);
+    context.lineTo(plotRight, y + 0.5);
+    context.stroke();
+
+    context.fillStyle = "#475467";
+    context.fillText(formatAxisValue(value, span, kind), plotLeft - tickLength - 4, y);
+  }
+
+  context.strokeStyle = "#98a2b3";
+  context.beginPath();
+  context.moveTo(plotLeft + 0.5, top + 5);
+  context.lineTo(plotLeft + 0.5, top + laneHeight - 5);
+  context.stroke();
+  context.restore();
 }
 
 function visibleTimedEvents(events, startSeconds, durationSeconds) {
@@ -265,6 +324,7 @@ function drawWaveformLane(context, lane, channel, windowChannel, width, index, s
   const mid = top + laneHeight / 2;
   const plotLeft = LEFT_GUTTER;
   const plotWidth = width - LEFT_GUTTER - 18;
+  const plotRight = width - 18;
   const color = channelColor(channel.label);
   const autoMin = windowChannel?.visibleMin ?? channel.physicalMin;
   const autoMax = windowChannel?.visibleMax ?? channel.physicalMax;
@@ -291,8 +351,9 @@ function drawWaveformLane(context, lane, channel, windowChannel, width, index, s
   context.strokeStyle = "#d0d5dd";
   context.beginPath();
   context.moveTo(plotLeft, mid + 0.5);
-  context.lineTo(width - 18, mid + 0.5);
+  context.lineTo(plotRight, mid + 0.5);
   context.stroke();
+  drawClinicalAxis(context, channel, top, laneHeight, plotLeft, plotRight, dataMin, dataMax, yForValue);
   addRegion(regions, channel, 0, top, LEFT_GUTTER, laneHeight, `Drag ${channel.label} to reorder`, "channel");
 
   const labelY = top + (laneHeight < 20 ? laneHeight / 2 : laneHeight < 48 ? laneHeight / 2 - 5 : 28);

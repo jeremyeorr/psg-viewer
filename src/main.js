@@ -2,7 +2,7 @@ import { applyChannelOrder, clamp, defaultVisibleChannelIds, formatDuration, mov
 import { EdfWorkerClient } from "./edf/edfClient.js";
 import { importScoring } from "./scoring/importers.js?v=20260522-xdf";
 import { loadPreferences, savePreferences } from "./viewer/preferences.js";
-import { renderPsgCanvas } from "./viewer/canvasRenderer.js";
+import { renderPsgCanvas } from "./viewer/canvasRenderer.js?v=20260522-yaxis";
 
 const app = document.querySelector("#app");
 const edfClient = new EdfWorkerClient();
