@@ -157,23 +157,6 @@ p {
   font-size: 12px;
 }
 
-.offset-control {
-  display: grid;
-  grid-template-columns: auto 72px auto;
-  align-items: center;
-  gap: 6px;
-  color: #475467;
-  font-size: 12px;
-}
-
-.offset-control input {
-  height: 32px;
-  min-width: 0;
-  border: 1px solid #98a2b3;
-  border-radius: 7px;
-  padding: 0 6px;
-}
-
 .mini-button {
   height: 32px;
   border: 1px solid #98a2b3;
@@ -184,8 +167,7 @@ p {
   cursor: pointer;
 }
 
-.mini-button:disabled,
-.offset-control input:disabled {
+.mini-button:disabled {
   opacity: 0.48;
   cursor: not-allowed;
 }

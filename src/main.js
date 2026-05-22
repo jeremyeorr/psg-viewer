@@ -1,4 +1,4 @@
-import { clamp, defaultVisibleChannelIds, formatDuration, orderChannelsForPsg, ZOOM_WINDOWS, DEFAULT_ZOOM_SECONDS } from "./domain/channels.js";
+import { clamp, defaultVisibleChannelIds, formatDuration, orderChannelsForPsg, ZOOM_WINDOWS, DEFAULT_ZOOM_SECONDS } from "./domain/channels.js?v=20260522-night";
 import { EdfWorkerClient } from "./edf/edfClient.js";
 import { importScoring } from "./scoring/importers.js";
 import { loadPreferences, savePreferences } from "./viewer/preferences.js";
@@ -19,8 +19,6 @@ const state = {
   eventVisibility: preferences.eventVisibility || {},
   sidebarOpen: preferences.sidebarOpen ?? false,
   sidebarMode: preferences.sidebarMode || "channels",
-  scoringOffsetSeconds: 0,
-  scoringAutoOffsetSeconds: 0,
   loading: false,
   warnings: [],
   error: ""
@@ -82,10 +80,6 @@ function formatClockAt(seconds) {
   return `${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")}:${String(date.getUTCSeconds()).padStart(2, "0")}`;
 }
 
-function autoScoringOffsetSeconds(scoring = state.scoring, study = state.study) {
-  return 0;
-}
-
 function alignScoringToEdfClock(scoring = state.scoring, study = state.study) {
   if (!scoring) return null;
   const recordingStartMs = Date.parse(study?.recordingStart || "");
@@ -109,13 +103,7 @@ function alignScoringToEdfClock(scoring = state.scoring, study = state.study) {
 
 function shiftedScoring() {
   const aligned = alignScoringToEdfClock();
-  if (!aligned || !state.scoringOffsetSeconds) return aligned;
-  const shift = state.scoringOffsetSeconds;
-  return {
-    ...aligned,
-    stages: aligned.stages.map((stage) => ({ ...stage, onset: stage.onset + shift })),
-    events: aligned.events.map((event) => ({ ...event, onset: event.onset + shift }))
-  };
+  return aligned;
 }
 
 function eventLabel(event) {
@@ -168,8 +156,6 @@ async function loadEdf(file) {
       study,
       visibleChannelIds: visibleChannelIds.filter((id) => study.channels.some((channel) => channel.id === id)),
       startSeconds: 0,
-      scoringAutoOffsetSeconds: autoScoringOffsetSeconds(state.scoring, study),
-      scoringOffsetSeconds: autoScoringOffsetSeconds(state.scoring, study),
       warnings: study.warnings,
       loading: false
     });
@@ -184,11 +170,8 @@ async function loadScoring(file) {
   setState({ loading: true, error: "", warnings: [`Importing ${file.name}`] });
   try {
     const scoring = await importScoring(file);
-    const autoOffset = autoScoringOffsetSeconds(scoring, state.study);
     setState({
       scoring,
-      scoringAutoOffsetSeconds: autoOffset,
-      scoringOffsetSeconds: autoOffset,
       warnings: scoring.warnings,
       loading: false
     });
@@ -227,7 +210,9 @@ function setStartSeconds(nextStart) {
   queueRender();
 }
 
-function setZoom(seconds) {
+function setZoom(value) {
+  const seconds = value === "night" ? state.study?.duration || DEFAULT_ZOOM_SECONDS : Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return;
   state.zoomSeconds = seconds;
   if (state.study) state.startSeconds = clamp(state.startSeconds, 0, Math.max(0, state.study.duration - state.zoomSeconds));
   persistPreferences();
@@ -250,16 +235,6 @@ function updateScale(channelId, patch) {
   rememberSidebarScroll();
   state.channelScale[channelId] = { mode: "auto", ...(state.channelScale[channelId] || {}), ...patch };
   persistPreferences();
-  queueRender();
-}
-
-function setScoringOffset(value) {
-  state.scoringOffsetSeconds = Number.isFinite(value) ? value : 0;
-  queueRender();
-}
-
-function resetScoringOffset() {
-  state.scoringOffsetSeconds = state.scoringAutoOffsetSeconds || 0;
   queueRender();
 }
 
@@ -365,7 +340,11 @@ function controls() {
       <button class="panel-toggle ${state.sidebarOpen && state.sidebarMode === "channels" ? "active" : ""}" id="show-channels" title="Show channel controls">Channels</button>
       <button class="panel-toggle ${state.sidebarOpen && state.sidebarMode === "events" ? "active" : ""}" id="show-events" title="Show event controls" ${!state.scoring ? "disabled" : ""}>Events</button>
       <div class="segmented" role="group" aria-label="Zoom window">
-        ${ZOOM_WINDOWS.map((seconds) => `<button class="${state.zoomSeconds === seconds ? "active" : ""}" data-zoom="${seconds}">${seconds < 60 ? `${seconds}s` : `${seconds / 60}m`}</button>`).join("")}
+        ${ZOOM_WINDOWS.map((value) => {
+          const active = value === "night" ? state.study && state.zoomSeconds === state.study.duration : state.zoomSeconds === value;
+          const label = value === "night" ? "Night" : value < 60 ? `${value}s` : `${value / 60}m`;
+          return `<button class="${active ? "active" : ""}" data-zoom="${value}" ${value === "night" && !state.study ? "disabled" : ""}>${label}</button>`;
+        }).join("")}
       </div>
       <button class="icon-button" data-jump="-${state.zoomSeconds}" title="Back one window" ${!state.study ? "disabled" : ""}>←</button>
       <button class="icon-button" data-jump="${state.zoomSeconds}" title="Forward one window" ${!state.study ? "disabled" : ""}>→</button>
@@ -374,12 +353,6 @@ function controls() {
         <input id="timeline" type="range" min="0" max="${maxStart}" step="1" value="${state.startSeconds}" ${!state.study ? "disabled" : ""} />
         <span>${state.study ? formatClockAt(state.study.duration) : "0:00"}</span>
       </label>
-      <label class="offset-control" title="Shift scoring overlays relative to signal time">
-        <span>Scoring</span>
-        <input id="scoring-offset" type="number" step="0.5" value="${state.scoringOffsetSeconds.toFixed(1)}" ${!state.scoring ? "disabled" : ""} />
-        <span>s</span>
-      </label>
-      <button class="mini-button" id="reset-scoring-offset" title="Reset scoring offset from EDF and scoring clocks" ${!state.scoring ? "disabled" : ""}>Auto</button>
     </section>
   `;
 }
@@ -531,14 +504,12 @@ function bindEvents() {
     if (file) loadScoring(file);
   });
   document.querySelectorAll("[data-zoom]").forEach((button) => {
-    button.addEventListener("click", () => setZoom(Number(button.dataset.zoom)));
+    button.addEventListener("click", () => setZoom(button.dataset.zoom));
   });
   document.querySelectorAll("[data-jump]").forEach((button) => {
     button.addEventListener("click", () => setStartSeconds(state.startSeconds + Number(button.dataset.jump)));
   });
   document.querySelector("#timeline")?.addEventListener("input", (event) => setStartSeconds(Number(event.target.value)));
-  document.querySelector("#scoring-offset")?.addEventListener("input", (event) => setScoringOffset(Number(event.target.value)));
-  document.querySelector("#reset-scoring-offset")?.addEventListener("click", () => resetScoringOffset());
   document.querySelectorAll("[data-channel]").forEach((input) => {
     input.addEventListener("change", () => {
       rememberSidebarScroll();

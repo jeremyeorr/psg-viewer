@@ -1,5 +1,5 @@
 export const DEFAULT_ZOOM_SECONDS = 30;
-export const ZOOM_WINDOWS = [30, 60, 120, 300, 600];
+export const ZOOM_WINDOWS = [30, 60, 120, 300, 600, "night"];
 
 const CHANNEL_GROUPS = [
   { kind: "eeg", patterns: ["eeg", "c3", "c4", "f3", "f4", "o1", "o2"], color: "#2d6cdf" },
