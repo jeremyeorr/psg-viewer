@@ -1,6 +1,6 @@
-.edf
-.xls
-.xlsx
-.xml
-.csv
+*.edf
+*.xls
+*.xlsx
+*.xml
+*.csv
 *.rml
