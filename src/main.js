@@ -1,0 +1,620 @@
+import { clamp, defaultVisibleChannelIds, formatDuration, orderChannelsForPsg, ZOOM_WINDOWS, DEFAULT_ZOOM_SECONDS } from "./domain/channels.js";
+import { EdfWorkerClient } from "./edf/edfClient.js";
+import { importScoring } from "./scoring/importers.js";
+import { loadPreferences, savePreferences } from "./viewer/preferences.js";
+import { renderPsgCanvas } from "./viewer/canvasRenderer.js";
+
+const app = document.querySelector("#app");
+const edfClient = new EdfWorkerClient();
+const preferences = loadPreferences();
+
+const state = {
+  study: null,
+  scoring: null,
+  visibleChannelIds: preferences.visibleChannelIds || [],
+  zoomSeconds: preferences.zoomSeconds || DEFAULT_ZOOM_SECONDS,
+  startSeconds: 0,
+  signalWindow: null,
+  channelScale: preferences.channelScale || {},
+  eventVisibility: preferences.eventVisibility || {},
+  sidebarOpen: preferences.sidebarOpen ?? false,
+  sidebarMode: preferences.sidebarMode || "channels",
+  scoringOffsetSeconds: 0,
+  scoringAutoOffsetSeconds: 0,
+  loading: false,
+  warnings: [],
+  error: ""
+};
+
+let canvas = null;
+let renderQueued = false;
+let dragStart = null;
+let canvasRegions = [];
+let sidebarScrollTop = 0;
+
+const PLOT_LEFT = 154;
+const PLOT_RIGHT_PADDING = 18;
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function setState(patch) {
+  Object.assign(state, patch);
+  queueRender();
+}
+
+function queueRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => {
+    renderQueued = false;
+    render();
+  });
+}
+
+function rememberSidebarScroll() {
+  const sidebar = document.querySelector(".sidebar");
+  if (sidebar) sidebarScrollTop = sidebar.scrollTop;
+}
+
+function restoreSidebarScroll() {
+  const sidebar = document.querySelector(".sidebar");
+  if (sidebar) sidebar.scrollTop = sidebarScrollTop;
+}
+
+function visibleChannels() {
+  if (!state.study) return [];
+  const ids = new Set(state.visibleChannelIds);
+  return orderChannelsForPsg(state.study.channels.filter((channel) => ids.has(channel.id)));
+}
+
+function formatClockAt(seconds) {
+  if (!state.study?.recordingStart) return formatDuration(seconds);
+  const startMs = Date.parse(state.study.recordingStart);
+  if (!Number.isFinite(startMs)) return formatDuration(seconds);
+  const date = new Date(startMs + seconds * 1000);
+  return `${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")}:${String(date.getUTCSeconds()).padStart(2, "0")}`;
+}
+
+function autoScoringOffsetSeconds(scoring = state.scoring, study = state.study) {
+  return 0;
+}
+
+function alignScoringToEdfClock(scoring = state.scoring, study = state.study) {
+  if (!scoring) return null;
+  const recordingStartMs = Date.parse(study?.recordingStart || "");
+  if (scoring.timing?.type !== "excelSerial" || !Number.isFinite(recordingStartMs)) return scoring;
+  const alignItem = (item) => {
+    let absoluteUnixMs = Number.isFinite(item.absoluteUnixMs) ? item.absoluteUnixMs : null;
+    if (absoluteUnixMs === null && Number.isFinite(item.sourceOnset) && item.sourceOnset > 20000) {
+      absoluteUnixMs = (item.sourceOnset - 25569) * 86400 * 1000;
+    }
+    if (absoluteUnixMs === null && Number.isFinite(scoring.timing.originUnixMs) && Number.isFinite(item.onset)) {
+      absoluteUnixMs = scoring.timing.originUnixMs + item.onset * 1000;
+    }
+    return absoluteUnixMs === null ? item : { ...item, onset: (absoluteUnixMs - recordingStartMs) / 1000 };
+  };
+  return {
+    ...scoring,
+    stages: scoring.stages.map(alignItem),
+    events: scoring.events.map(alignItem)
+  };
+}
+
+function shiftedScoring() {
+  const aligned = alignScoringToEdfClock();
+  if (!aligned || !state.scoringOffsetSeconds) return aligned;
+  const shift = state.scoringOffsetSeconds;
+  return {
+    ...aligned,
+    stages: aligned.stages.map((stage) => ({ ...stage, onset: stage.onset + shift })),
+    events: aligned.events.map((event) => ({ ...event, onset: event.onset + shift }))
+  };
+}
+
+function eventLabel(event) {
+  return String(event.label || event.subtype || event.type || "Event").trim();
+}
+
+function eventKey(event) {
+  return eventLabel(event).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "event";
+}
+
+function eventOptions() {
+  const counts = new Map();
+  for (const event of state.scoring?.events || []) {
+    const key = eventKey(event);
+    const label = eventLabel(event);
+    const existing = counts.get(key) || { key, label, count: 0 };
+    existing.count += 1;
+    counts.set(key, existing);
+  }
+  return Array.from(counts.values()).sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function visibleScoring() {
+  const scoring = shiftedScoring();
+  if (!scoring) return null;
+  return {
+    ...scoring,
+    recordingStart: state.study?.recordingStart || null,
+    events: scoring.events.filter((event) => state.eventVisibility[eventKey(event)] !== false)
+  };
+}
+
+function persistPreferences() {
+  savePreferences({
+    visibleChannelIds: state.visibleChannelIds,
+    zoomSeconds: state.zoomSeconds,
+    channelScale: state.channelScale,
+    eventVisibility: state.eventVisibility,
+    sidebarOpen: state.sidebarOpen,
+    sidebarMode: state.sidebarMode
+  });
+}
+
+async function loadEdf(file) {
+  setState({ loading: true, error: "", warnings: [`Loading ${file.name}`], signalWindow: null });
+  try {
+    const study = await edfClient.loadStudy(file);
+    const visibleChannelIds = preferences.visibleChannelIds?.length ? preferences.visibleChannelIds : defaultVisibleChannelIds(study.channels);
+    setState({
+      study,
+      visibleChannelIds: visibleChannelIds.filter((id) => study.channels.some((channel) => channel.id === id)),
+      startSeconds: 0,
+      scoringAutoOffsetSeconds: autoScoringOffsetSeconds(state.scoring, study),
+      scoringOffsetSeconds: autoScoringOffsetSeconds(state.scoring, study),
+      warnings: study.warnings,
+      loading: false
+    });
+    persistPreferences();
+    await requestWindow();
+  } catch (error) {
+    setState({ error: error.message, loading: false });
+  }
+}
+
+async function loadScoring(file) {
+  setState({ loading: true, error: "", warnings: [`Importing ${file.name}`] });
+  try {
+    const scoring = await importScoring(file);
+    const autoOffset = autoScoringOffsetSeconds(scoring, state.study);
+    setState({
+      scoring,
+      scoringAutoOffsetSeconds: autoOffset,
+      scoringOffsetSeconds: autoOffset,
+      warnings: scoring.warnings,
+      loading: false
+    });
+  } catch (error) {
+    setState({ error: error.message, loading: false });
+  }
+}
+
+async function requestWindow() {
+  if (!state.study || !canvas) return;
+  const targetPixelWidth = Math.max(300, Math.floor(canvas.parentElement.getBoundingClientRect().width - 172));
+  const channelIds = visibleChannels().map((channel) => channel.id);
+  if (!channelIds.length) {
+    setState({ signalWindow: null });
+    return;
+  }
+  const request = {
+    channelIds,
+    startSeconds: state.startSeconds,
+    durationSeconds: state.zoomSeconds,
+    targetPixelWidth
+  };
+  try {
+    const result = await edfClient.readWindow(request);
+    setState({ signalWindow: result, warnings: [...(state.study.warnings || []), ...(result.warnings || [])] });
+  } catch (error) {
+    setState({ error: error.message });
+  }
+}
+
+function setStartSeconds(nextStart) {
+  if (!state.study) return;
+  const maxStart = Math.max(0, state.study.duration - state.zoomSeconds);
+  state.startSeconds = clamp(nextStart, 0, maxStart);
+  requestWindow();
+  queueRender();
+}
+
+function setZoom(seconds) {
+  state.zoomSeconds = seconds;
+  if (state.study) state.startSeconds = clamp(state.startSeconds, 0, Math.max(0, state.study.duration - state.zoomSeconds));
+  persistPreferences();
+  requestWindow();
+  queueRender();
+}
+
+function toggleChannel(id, checked) {
+  rememberSidebarScroll();
+  const ids = new Set(state.visibleChannelIds);
+  if (checked) ids.add(id);
+  else ids.delete(id);
+  state.visibleChannelIds = state.study.channels.map((channel) => channel.id).filter((id) => ids.has(id));
+  persistPreferences();
+  requestWindow();
+  queueRender();
+}
+
+function updateScale(channelId, patch) {
+  rememberSidebarScroll();
+  state.channelScale[channelId] = { mode: "auto", ...(state.channelScale[channelId] || {}), ...patch };
+  persistPreferences();
+  queueRender();
+}
+
+function setScoringOffset(value) {
+  state.scoringOffsetSeconds = Number.isFinite(value) ? value : 0;
+  queueRender();
+}
+
+function resetScoringOffset() {
+  state.scoringOffsetSeconds = state.scoringAutoOffsetSeconds || 0;
+  queueRender();
+}
+
+function toggleSidebar() {
+  state.sidebarOpen = !state.sidebarOpen;
+  persistPreferences();
+  queueRender();
+  requestAnimationFrame(() => requestWindow());
+}
+
+function openSidebar(mode) {
+  state.sidebarMode = mode;
+  state.sidebarOpen = true;
+  persistPreferences();
+  queueRender();
+  requestAnimationFrame(() => requestWindow());
+}
+
+function toggleEventVisibility(key, checked) {
+  rememberSidebarScroll();
+  state.eventVisibility = { ...state.eventVisibility, [key]: checked };
+  persistPreferences();
+  queueRender();
+}
+
+function setAllEventsVisible(visible) {
+  rememberSidebarScroll();
+  const next = {};
+  for (const option of eventOptions()) next[option.key] = visible;
+  state.eventVisibility = next;
+  persistPreferences();
+  queueRender();
+}
+
+function findHoverRegion(event) {
+  if (!canvas) return null;
+  const rect = canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  for (let index = canvasRegions.length - 1; index >= 0; index -= 1) {
+    const region = canvasRegions[index];
+    if (x >= region.x && x <= region.x + region.width && y >= region.y && y <= region.y + region.height) {
+      return region;
+    }
+  }
+  return null;
+}
+
+function showTooltip(event, region) {
+  const tooltip = document.querySelector("#canvas-tooltip");
+  if (!tooltip || !region) return;
+  tooltip.textContent = region.label;
+  tooltip.classList.remove("hidden");
+  tooltip.style.left = `${event.clientX + 12}px`;
+  tooltip.style.top = `${event.clientY + 12}px`;
+}
+
+function hideTooltip() {
+  document.querySelector("#canvas-tooltip")?.classList.add("hidden");
+}
+
+function hideTimeCursor() {
+  document.querySelector("#time-cursor")?.classList.add("hidden");
+}
+
+function updateTimeCursor(event) {
+  if (!canvas || !state.study) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = clamp(event.clientX - rect.left, PLOT_LEFT, rect.width - PLOT_RIGHT_PADDING);
+  const plotWidth = rect.width - PLOT_LEFT - PLOT_RIGHT_PADDING;
+  const time = state.startSeconds + ((x - PLOT_LEFT) / Math.max(1, plotWidth)) * state.zoomSeconds;
+  const cursor = document.querySelector("#time-cursor");
+  const label = document.querySelector("#time-cursor-label");
+  if (!cursor || !label) return;
+  cursor.classList.remove("hidden");
+  cursor.style.left = `${x}px`;
+  label.textContent = formatClockAt(time);
+}
+
+function fileLoader() {
+  const startText = state.study?.recordingStartLabel || state.study?.recordingStart || "";
+  return `
+    <section class="toolbar" aria-label="File loading">
+      <label class="file-control">
+        <span>EDF / EDF+</span>
+        <input id="edf-file" type="file" accept=".edf,.EDF,.bdf,.BDF" />
+      </label>
+      <label class="file-control">
+        <span>Scoring</span>
+        <input id="scoring-file" type="file" accept=".xml,.XML,.xlsx,.XLSX,.xls,.XLS,.csv,.CSV,.tsv,.TSV,.txt" />
+      </label>
+      <div class="study-summary">
+        ${state.study ? `<strong>${escapeHtml(state.study.fileName)}</strong><span>${state.study.channels.length} channels · ${formatDuration(state.study.duration)}${startText ? ` · Start ${escapeHtml(startText)}` : ""}</span>` : "<strong>No study loaded</strong><span>Files are read locally in this browser.</span>"}
+      </div>
+    </section>
+  `;
+}
+
+function controls() {
+  const maxStart = state.study ? Math.max(0, state.study.duration - state.zoomSeconds) : 0;
+  return `
+    <section class="controls" aria-label="Viewer controls">
+      <button class="panel-toggle ${state.sidebarOpen && state.sidebarMode === "channels" ? "active" : ""}" id="show-channels" title="Show channel controls">Channels</button>
+      <button class="panel-toggle ${state.sidebarOpen && state.sidebarMode === "events" ? "active" : ""}" id="show-events" title="Show event controls" ${!state.scoring ? "disabled" : ""}>Events</button>
+      <div class="segmented" role="group" aria-label="Zoom window">
+        ${ZOOM_WINDOWS.map((seconds) => `<button class="${state.zoomSeconds === seconds ? "active" : ""}" data-zoom="${seconds}">${seconds < 60 ? `${seconds}s` : `${seconds / 60}m`}</button>`).join("")}
+      </div>
+      <button class="icon-button" data-jump="-${state.zoomSeconds}" title="Back one window" ${!state.study ? "disabled" : ""}>←</button>
+      <button class="icon-button" data-jump="${state.zoomSeconds}" title="Forward one window" ${!state.study ? "disabled" : ""}>→</button>
+      <label class="timeline">
+        <span>${state.study ? formatClockAt(state.startSeconds) : "0:00"}</span>
+        <input id="timeline" type="range" min="0" max="${maxStart}" step="1" value="${state.startSeconds}" ${!state.study ? "disabled" : ""} />
+        <span>${state.study ? formatClockAt(state.study.duration) : "0:00"}</span>
+      </label>
+      <label class="offset-control" title="Shift scoring overlays relative to signal time">
+        <span>Scoring</span>
+        <input id="scoring-offset" type="number" step="0.5" value="${state.scoringOffsetSeconds.toFixed(1)}" ${!state.scoring ? "disabled" : ""} />
+        <span>s</span>
+      </label>
+      <button class="mini-button" id="reset-scoring-offset" title="Reset scoring offset from EDF and scoring clocks" ${!state.scoring ? "disabled" : ""}>Auto</button>
+    </section>
+  `;
+}
+
+function channelPanel() {
+  const channels = state.study ? orderChannelsForPsg(state.study.channels) : [];
+  const visible = new Set(state.visibleChannelIds);
+  if (!channels.length) {
+    return `<aside class="sidebar"><div class="empty">Load an EDF file to choose channels.</div></aside>`;
+  }
+  return `
+    <aside class="sidebar" aria-label="Channels">
+      <div class="sidebar-header">
+        <h2>Channels</h2>
+        <span>${visible.size}/${channels.filter((channel) => !channel.isAnnotation).length}</span>
+      </div>
+      <div class="channel-list">
+        ${channels.map((channel) => {
+          const checked = visible.has(channel.id);
+          const scale = { mode: "auto", range: "", center: "", ...(state.channelScale[channel.id] || {}) };
+          return `
+            <article class="channel-row ${channel.isAnnotation ? "muted" : ""}">
+              <label>
+                <input type="checkbox" data-channel="${channel.id}" ${checked ? "checked" : ""} ${channel.isAnnotation ? "disabled" : ""} />
+                <span>${escapeHtml(channel.label)}</span>
+              </label>
+              <small>${channel.sampleRate.toFixed(channel.sampleRate >= 10 ? 0 : 1)} Hz ${channel.units ? `· ${escapeHtml(channel.units)}` : ""}</small>
+              ${checked ? `
+                <div class="scale-controls">
+                  <div class="scale-mode" aria-label="Scale mode for ${escapeHtml(channel.label)}">
+                    <span>Scale</span>
+                    <button type="button" class="${scale.mode !== "manual" ? "active" : ""}" data-scale-mode="${channel.id}" data-scale-mode-value="auto">Auto</button>
+                    <button type="button" class="${scale.mode === "manual" ? "active" : ""}" data-scale-mode="${channel.id}" data-scale-mode-value="manual">Manual</button>
+                  </div>
+                  <label class="${scale.mode === "manual" ? "" : "disabled"}" title="Manual full-scale amplitude range"><span>Range</span><input type="number" step="0.01" value="${escapeHtml(scale.range)}" data-range="${channel.id}" ${scale.mode === "manual" ? "" : "disabled"} /></label>
+                  <label class="${scale.mode === "manual" ? "" : "disabled"}" title="Manual center value"><span>Center</span><input type="number" step="0.01" value="${escapeHtml(scale.center)}" data-center="${channel.id}" ${scale.mode === "manual" ? "" : "disabled"} /></label>
+                </div>
+              ` : ""}
+            </article>
+          `;
+        }).join("")}
+      </div>
+    </aside>
+  `;
+}
+
+function eventsPanel() {
+  const options = eventOptions();
+  if (!state.scoring) {
+    return `<aside class="sidebar"><div class="empty">Load a scoring file to choose events.</div></aside>`;
+  }
+  return `
+    <aside class="sidebar" aria-label="Events">
+      <div class="sidebar-header">
+        <h2>Events</h2>
+        <span>${options.filter((option) => state.eventVisibility[option.key] !== false).length}/${options.length}</span>
+      </div>
+      <div class="bulk-actions">
+        <button class="mini-button" data-events-all="show">Show all</button>
+        <button class="mini-button" data-events-all="hide">Hide all</button>
+      </div>
+      <div class="channel-list">
+        ${options.map((option) => `
+          <article class="channel-row">
+            <label>
+              <input type="checkbox" data-event-key="${escapeHtml(option.key)}" ${state.eventVisibility[option.key] !== false ? "checked" : ""} />
+              <span>${escapeHtml(option.label)}</span>
+            </label>
+            <small>${option.count} events</small>
+          </article>
+        `).join("")}
+      </div>
+    </aside>
+  `;
+}
+
+function sidebarPanel() {
+  return state.sidebarMode === "events" ? eventsPanel() : channelPanel();
+}
+
+function statusPanel() {
+  const scoringText = state.scoring
+    ? `${state.scoring.stages.length} stages · ${state.scoring.events.length} events · ${state.scoring.sourceFormat.toUpperCase()}`
+    : "No scoring loaded";
+  return `
+    <section class="status ${state.error ? "has-error" : ""}">
+      <div>${state.loading ? "Working" : "Ready"} · ${scoringText}</div>
+      ${state.error ? `<strong>${escapeHtml(state.error)}</strong>` : ""}
+      ${(state.warnings || []).slice(0, 5).map((warning) => `<span>${escapeHtml(warning)}</span>`).join("")}
+    </section>
+  `;
+}
+
+function render() {
+  rememberSidebarScroll();
+  app.innerHTML = `
+    <main class="shell">
+      <header>
+        <div>
+          <h1>PSG Viewer</h1>
+          <p>Local EDF/EDF+ waveform review with scoring overlays.</p>
+        </div>
+      </header>
+      ${fileLoader()}
+      ${controls()}
+      <div class="workspace ${state.sidebarOpen ? "sidebar-open" : "sidebar-closed"}">
+        ${state.sidebarOpen ? sidebarPanel() : ""}
+        <section class="viewer">
+          <div class="canvas-wrap">
+            <canvas id="psg-canvas" tabindex="0" aria-label="PSG waveform viewer"></canvas>
+            <div id="time-cursor" class="time-cursor hidden"><span id="time-cursor-label"></span></div>
+            <div id="canvas-tooltip" class="canvas-tooltip hidden"></div>
+          </div>
+          ${statusPanel()}
+        </section>
+      </div>
+    </main>
+  `;
+  bindEvents();
+  restoreSidebarScroll();
+  canvas = document.querySelector("#psg-canvas");
+  const renderResult = renderPsgCanvas(canvas, {
+    visibleChannels: visibleChannels(),
+    signalWindow: state.signalWindow,
+    startSeconds: state.startSeconds,
+    zoomSeconds: state.zoomSeconds,
+    recordingStart: state.study?.recordingStart || null,
+    scoring: visibleScoring(),
+    channelScale: state.channelScale
+  });
+  canvasRegions = renderResult.regions || [];
+}
+
+function bindEvents() {
+  document.querySelector("#show-channels")?.addEventListener("click", () => {
+    if (state.sidebarOpen && state.sidebarMode === "channels") toggleSidebar();
+    else openSidebar("channels");
+  });
+  document.querySelector("#show-events")?.addEventListener("click", () => {
+    if (state.sidebarOpen && state.sidebarMode === "events") toggleSidebar();
+    else openSidebar("events");
+  });
+  document.querySelector("#edf-file")?.addEventListener("change", (event) => {
+    const [file] = event.target.files || [];
+    if (file) loadEdf(file);
+  });
+  document.querySelector("#scoring-file")?.addEventListener("change", (event) => {
+    const [file] = event.target.files || [];
+    if (file) loadScoring(file);
+  });
+  document.querySelectorAll("[data-zoom]").forEach((button) => {
+    button.addEventListener("click", () => setZoom(Number(button.dataset.zoom)));
+  });
+  document.querySelectorAll("[data-jump]").forEach((button) => {
+    button.addEventListener("click", () => setStartSeconds(state.startSeconds + Number(button.dataset.jump)));
+  });
+  document.querySelector("#timeline")?.addEventListener("input", (event) => setStartSeconds(Number(event.target.value)));
+  document.querySelector("#scoring-offset")?.addEventListener("input", (event) => setScoringOffset(Number(event.target.value)));
+  document.querySelector("#reset-scoring-offset")?.addEventListener("click", () => resetScoringOffset());
+  document.querySelectorAll("[data-channel]").forEach((input) => {
+    input.addEventListener("change", () => {
+      rememberSidebarScroll();
+      toggleChannel(Number(input.dataset.channel), input.checked);
+    });
+  });
+  document.querySelectorAll("[data-scale-mode]").forEach((input) => {
+    input.addEventListener("click", () => {
+      const channelId = Number(input.dataset.scaleMode);
+      const channelWindow = state.signalWindow?.channels.find((candidate) => candidate.channelId === channelId);
+      const visibleMin = channelWindow?.visibleMin ?? 0;
+      const visibleMax = channelWindow?.visibleMax ?? 1;
+      updateScale(channelId, {
+        mode: input.dataset.scaleModeValue === "manual" ? "manual" : "auto",
+        range: Math.max(0.1, visibleMax - visibleMin).toFixed(2),
+        center: ((visibleMax + visibleMin) / 2).toFixed(2)
+      });
+    });
+  });
+  document.querySelectorAll("[data-range]").forEach((input) => {
+    input.addEventListener("input", () => updateScale(Number(input.dataset.range), { mode: "manual", range: Number(input.value) }));
+  });
+  document.querySelectorAll("[data-center]").forEach((input) => {
+    input.addEventListener("input", () => updateScale(Number(input.dataset.center), { mode: "manual", center: Number(input.value) }));
+  });
+  document.querySelectorAll("[data-event-key]").forEach((input) => {
+    input.addEventListener("change", () => toggleEventVisibility(input.dataset.eventKey, input.checked));
+  });
+  document.querySelectorAll("[data-events-all]").forEach((button) => {
+    button.addEventListener("click", () => setAllEventsVisible(button.dataset.eventsAll === "show"));
+  });
+  document.querySelector(".sidebar")?.addEventListener("scroll", () => rememberSidebarScroll());
+  const activeCanvas = document.querySelector("#psg-canvas");
+  activeCanvas?.addEventListener("wheel", (event) => {
+    if (!state.study) return;
+    event.preventDefault();
+    const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+    setStartSeconds(state.startSeconds + (delta / 300) * state.zoomSeconds);
+  }, { passive: false });
+  activeCanvas?.addEventListener("pointerdown", (event) => {
+    hideTooltip();
+    activeCanvas.setPointerCapture(event.pointerId);
+    dragStart = { x: event.clientX, start: state.startSeconds };
+  });
+  activeCanvas?.addEventListener("pointermove", (event) => {
+    updateTimeCursor(event);
+    if (!dragStart) {
+      const region = findHoverRegion(event);
+      if (region) showTooltip(event, region);
+      else hideTooltip();
+      return;
+    }
+    if (!state.study) return;
+    const width = activeCanvas.getBoundingClientRect().width;
+    const dx = event.clientX - dragStart.x;
+    setStartSeconds(dragStart.start - (dx / width) * state.zoomSeconds);
+  });
+  activeCanvas?.addEventListener("pointerup", () => {
+    dragStart = null;
+  });
+  activeCanvas?.addEventListener("pointerleave", () => {
+    dragStart = null;
+    hideTooltip();
+    hideTimeCursor();
+  });
+  activeCanvas?.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowLeft") setStartSeconds(state.startSeconds - state.zoomSeconds / 4);
+    if (event.key === "ArrowRight") setStartSeconds(state.startSeconds + state.zoomSeconds / 4);
+    if (event.key === "PageUp") setStartSeconds(state.startSeconds - state.zoomSeconds);
+    if (event.key === "PageDown") setStartSeconds(state.startSeconds + state.zoomSeconds);
+  });
+}
+
+window.addEventListener("resize", () => {
+  requestWindow();
+  queueRender();
+});
+
+render();

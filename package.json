@@ -1,0 +1,11 @@
+{
+  "name": "psg-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A lightweight local browser polysomnography viewer for EDF/EDF+ signals and scoring files.",
+  "scripts": {
+    "dev": "python3 -m http.server 5173",
+    "test": "node --test"
+  }
+}
