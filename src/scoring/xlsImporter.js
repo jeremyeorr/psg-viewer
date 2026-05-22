@@ -1,4 +1,4 @@
-import { normalizeRows } from "./normalize.js";
+import { normalizeRows } from "./normalize.js?v=20260522-rml2";
 
 const FREE_SECTOR = 0xffffffff;
 const END_OF_CHAIN = 0xfffffffe;

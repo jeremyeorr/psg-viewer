@@ -5,7 +5,7 @@ A lightweight, local-only browser viewer for polysomnography review. The app loa
 ## Current Features
 
 - Local browser file loading for EDF/EDF+ signals.
-- Scoring import for XML, XLS, XLSX, CSV, TSV, and TXT tabular files.
+- Scoring import for RML, XML, XLS, XLSX, CSV, TSV, and TXT tabular files.
 - Absolute clock-time alignment between EDF start time and scoring timestamps.
 - Standard PSG display order with four EEG channels and two EOG channels when available.
 - Channel sidebar with visibility toggles, autoscaling, and manual range/center controls.
@@ -32,6 +32,8 @@ Then open:
 http://127.0.0.1:5173/
 ```
 
+Do not open `index.html` directly as a `file://` URL. The app uses browser ES modules and a Web Worker, which need a local HTTP server.
+
 You can also run the equivalent command directly:
 
 ```sh
@@ -48,6 +50,13 @@ python3 -m http.server 5173
 6. Use the zoom buttons and timeline to review the recording.
 
 Files stay in the browser process. The app does not upload or persist study data.
+
+## Compatible Exports
+
+Validated:
+
+- Nox / Noxturnal: EDF signal export with XLS scoring export.
+- Philips Respironics Sleepware G3: EDF signal export with RML scoring export. The RML importer reads Sleepware stages, respiratory events, arousals, comments, SpO2 desaturation events, limb events, and body-position overrides. The `*-AT.xml` file seen in one sample appears to be an audit log, not a scoring file.
 
 ## Timing Model
 
@@ -67,6 +76,7 @@ The current tests cover:
 - Visible-window EDF slicing.
 - Min/max downsampling.
 - XML and tabular scoring normalization.
+- Sleepware RML scoring normalization.
 - Excel serial timestamp preservation for EDF alignment.
 - Default PSG channel ordering.
 

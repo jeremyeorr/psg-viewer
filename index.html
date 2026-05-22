@@ -4,10 +4,23 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PSG Viewer</title>
-    <link rel="stylesheet" href="./src/styles.css" />
+    <link rel="stylesheet" href="./src/styles.css?v=20260522-scale" />
   </head>
   <body>
-    <div id="app"></div>
-    <script type="module" src="./src/main.js?v=20260522-lane-reorder"></script>
+    <div id="app">
+      <main class="shell">
+        <header>
+          <div>
+            <h1>PSG Viewer</h1>
+            <p>Start the local server, then open http://127.0.0.1:5173/.</p>
+          </div>
+        </header>
+        <section class="status has-error">
+          <div>This app cannot run from a file URL.</div>
+          <span>Run <code>python3 -m http.server 5173</code> from the project folder.</span>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="./src/main.js?v=20260522-scale"></script>
   </body>
 </html>

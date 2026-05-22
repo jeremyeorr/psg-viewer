@@ -50,12 +50,12 @@ export function normalizeStage(value) {
   const key = compactKey(text);
   if (!text) return null;
   if (["0", "w", "wake", "awake"].includes(key)) return "W";
-  if (["1", "n1", "s1", "stage1", "nrem1"].includes(key)) return "N1";
-  if (["2", "n2", "s2", "stage2", "nrem2"].includes(key)) return "N2";
-  if (["3", "n3", "s3", "stage3", "nrem3"].includes(key)) return "N3";
-  if (["4", "n4", "s4", "stage4"].includes(key)) return "N3";
+  if (["1", "n1", "s1", "stage1", "nrem1", "nonrem1"].includes(key)) return "N1";
+  if (["2", "n2", "s2", "stage2", "nrem2", "nonrem2"].includes(key)) return "N2";
+  if (["3", "n3", "s3", "stage3", "nrem3", "nonrem3"].includes(key)) return "N3";
+  if (["4", "n4", "s4", "stage4", "nonrem4"].includes(key)) return "N3";
   if (["5", "r", "rem", "stage5"].includes(key)) return "REM";
-  if (["9", "?", "unknown", "movement", "mt"].includes(key)) return "Unknown";
+  if (["9", "?", "unknown", "movement", "mt", "notscored", "unscored"].includes(key)) return "Unknown";
   return text.toUpperCase();
 }
 

@@ -1,5 +1,5 @@
-import { normalizeRows } from "./normalize.js";
-import { parseXlsScoring } from "./xlsImporter.js";
+import { normalizeRows } from "./normalize.js?v=20260522-rml2";
+import { parseXlsScoring } from "./xlsImporter.js?v=20260522-rml2";
 
 const TEXT_DECODER = new TextDecoder();
 

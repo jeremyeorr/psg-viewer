@@ -1,4 +1,4 @@
-import { channelColor, formatDuration } from "../domain/channels.js";
+import { channelColor, formatDuration } from "../domain/channels.js?v=20260522-rml2";
 
 const LEFT_GUTTER = 154;
 const TOP_AXIS = 22;
@@ -95,7 +95,7 @@ function positionKey(event) {
   const text = `${event.type || ""} ${event.subtype || ""} ${event.label || ""}`.toLowerCase();
   if (text.includes("supine")) return "supine";
   if (text.includes("prone")) return "prone";
-  if (text.includes("upright") || text.includes("sitting") || text.includes("standing")) return "upright";
+  if (text.includes("upright") || text.includes("sitting") || text.includes("standing") || label === "up") return "upright";
   if (!text.includes("leg") && !text.includes("limb")) {
     if (text.includes("left lateral") || label === "left" || text.includes("left side")) return "left";
     if (text.includes("right lateral") || label === "right" || text.includes("right side")) return "right";

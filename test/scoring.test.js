@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { normalizeRows, normalizeStage, parseSeconds } from "../src/scoring/normalize.js";
+import { parseRmlScoring } from "../src/scoring/rmlImporter.js";
 import { parseXmlScoring } from "../src/scoring/xmlImporter.js";
 
 test("parseSeconds handles numeric seconds and clock strings", () => {
@@ -13,6 +14,9 @@ test("parseSeconds handles numeric seconds and clock strings", () => {
 test("normalizeStage maps common PSG labels", () => {
   assert.equal(normalizeStage("0"), "W");
   assert.equal(normalizeStage("Stage 2"), "N2");
+  assert.equal(normalizeStage("NonREM1"), "N1");
+  assert.equal(normalizeStage("NonREM2"), "N2");
+  assert.equal(normalizeStage("NotScored"), "Unknown");
   assert.equal(normalizeStage("REM"), "REM");
   assert.equal(normalizeStage("4"), "N3");
 });
@@ -69,4 +73,37 @@ test("parseXmlScoring handles NSRR-style stages and scored events", async () => 
   assert.equal(result.events.length, 1);
   assert.equal(result.events[0].onset, 60);
   assert.equal(result.events[0].duration, 12.5);
+});
+
+test("parseRmlScoring handles Sleepware stages and events", async () => {
+  const rml = `
+    <PatientStudy>
+      <ScoringData>
+        <Events>
+          <Event Family="Respiratory" Type="ObstructiveApnea" Start="2888.5" Duration="13.5">
+            <Input>Flow Patient</Input>
+          </Event>
+          <Event Family="User" Type="BodyPositionOverride" Start="2806" Duration="1273">
+            <BodyPosition>Right</BodyPosition>
+          </Event>
+          <Event Family="User" Type="Gain" Start="0" Duration="0" />
+        </Events>
+        <StagingData>
+          <Stage Type="Wake" Start="2820" />
+          <Stage Type="NonREM1" Start="2880" />
+          <Stage Type="NonREM2" Start="2910" />
+        </StagingData>
+      </ScoringData>
+    </PatientStudy>
+  `;
+  const result = await parseRmlScoring(rml);
+
+  assert.equal(result.sourceFormat, "rml");
+  assert.deepEqual(result.stages.map((stage) => stage.stage), ["W", "N1", "N2"]);
+  assert.equal(result.stages[0].duration, 60);
+  assert.equal(result.events.length, 2);
+  assert.equal(result.events[0].label, "Right");
+  assert.equal(result.events[1].type, "Respiratory");
+  assert.equal(result.events[1].label, "ObstructiveApnea");
+  assert.equal(result.events[1].channel, "Flow Patient");
 });

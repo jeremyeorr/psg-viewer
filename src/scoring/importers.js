@@ -1,6 +1,7 @@
-import { normalizeRows } from "./normalize.js";
-import { parseXmlScoring } from "./xmlImporter.js";
-import { parseXlsxScoring } from "./xlsxImporter.js";
+import { normalizeRows } from "./normalize.js?v=20260522-rml2";
+import { parseRmlScoring } from "./rmlImporter.js?v=20260522-rml2";
+import { parseXmlScoring } from "./xmlImporter.js?v=20260522-rml2";
+import { parseXlsxScoring } from "./xlsxImporter.js?v=20260522-rml2";
 
 function parseDelimited(text, delimiter) {
   const rows = [];
@@ -47,6 +48,11 @@ function rowsToObjects(rows) {
 
 export const scoringImporters = [
   {
+    name: "Sleepware RML",
+    canRead: (file) => /\.rml$/i.test(file.name || ""),
+    parse: parseRmlScoring
+  },
+  {
     name: "XML",
     canRead: (file) => /\.xml$/i.test(file.name || "") || /xml/i.test(file.type || ""),
     parse: parseXmlScoring
@@ -70,7 +76,7 @@ export const scoringImporters = [
 export async function importScoring(file) {
   const importer = scoringImporters.find((candidate) => candidate.canRead(file));
   if (!importer) {
-    throw new Error("Unsupported scoring format. Use XML, XLSX, CSV, or TSV.");
+    throw new Error("Unsupported scoring format. Use RML, XML, XLSX, XLS, CSV, or TSV.");
   }
   return importer.parse(file);
 }

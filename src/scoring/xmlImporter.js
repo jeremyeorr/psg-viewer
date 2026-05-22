@@ -1,4 +1,4 @@
-import { DEFAULT_EPOCH_LENGTH, normalizeRows, normalizeStage, parseSeconds } from "./normalize.js";
+import { DEFAULT_EPOCH_LENGTH, normalizeRows, normalizeStage, parseSeconds } from "./normalize.js?v=20260522-rml2";
 
 function textFromNode(node, tagName) {
   const child = Array.from(node.children || []).find((candidate) => candidate.tagName.toLowerCase() === tagName.toLowerCase());
@@ -63,6 +63,10 @@ function parseWithDom(text) {
     });
   }
 
+  if (!stages.length && !events.length) {
+    warnings.push("No XML scoring stages or events were found.");
+  }
+
   return {
     stages: stages.sort((a, b) => a.onset - b.onset),
     events: events.sort((a, b) => a.onset - b.onset),
@@ -104,7 +108,9 @@ function parseXmlFallback(text) {
     });
   }
 
-  return { stages, events, warnings: [], sourceFormat: "xml", epochLength: DEFAULT_EPOCH_LENGTH };
+  const warnings = [];
+  if (!stages.length && !events.length) warnings.push("No XML scoring stages or events were found.");
+  return { stages, events, warnings, sourceFormat: "xml", epochLength: DEFAULT_EPOCH_LENGTH };
 }
 
 function tag(text, name) {

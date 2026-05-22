@@ -1,6 +1,6 @@
-import { applyChannelOrder, clamp, defaultVisibleChannelIds, formatDuration, moveChannelInOrder, ZOOM_WINDOWS, DEFAULT_ZOOM_SECONDS } from "./domain/channels.js?v=20260522-lane-reorder";
+import { applyChannelOrder, clamp, defaultVisibleChannelIds, formatDuration, moveChannelInOrder, ZOOM_WINDOWS, DEFAULT_ZOOM_SECONDS } from "./domain/channels.js?v=20260522-scale";
 import { EdfWorkerClient } from "./edf/edfClient.js";
-import { importScoring } from "./scoring/importers.js";
+import { importScoring } from "./scoring/importers.js?v=20260522-rml2";
 import { loadPreferences, savePreferences } from "./viewer/preferences.js";
 import { renderPsgCanvas } from "./viewer/canvasRenderer.js";
 
@@ -34,6 +34,7 @@ let sidebarScrollTop = 0;
 
 const PLOT_LEFT = 154;
 const PLOT_RIGHT_PADDING = 18;
+const MANUAL_SCALE_STEP = 0.01;
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -301,6 +302,41 @@ function updateScale(channelId, patch) {
   queueRender();
 }
 
+function updateScaleDraft(channelId, patch) {
+  rememberSidebarScroll();
+  state.channelScale[channelId] = { mode: "manual", ...(state.channelScale[channelId] || {}), ...patch };
+}
+
+function commitScaleDraft() {
+  persistPreferences();
+  queueRender();
+}
+
+function scaleDefaults(channelId) {
+  const channelWindow = state.signalWindow?.channels.find((candidate) => candidate.channelId === channelId);
+  const visibleMin = channelWindow?.visibleMin ?? 0;
+  const visibleMax = channelWindow?.visibleMax ?? 1;
+  return {
+    range: Math.max(0.01, visibleMax - visibleMin),
+    center: (visibleMax + visibleMin) / 2
+  };
+}
+
+function scaleNumber(value, fallback) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function nudgeScale(channelId, field, delta) {
+  const defaults = scaleDefaults(channelId);
+  const current = { mode: "manual", ...(state.channelScale[channelId] || {}) };
+  const fallback = field === "range" ? defaults.range : defaults.center;
+  const next = field === "range"
+    ? Math.max(MANUAL_SCALE_STEP, scaleNumber(current.range, fallback) + delta)
+    : scaleNumber(current.center, fallback) + delta;
+  updateScale(channelId, { mode: "manual", [field]: next.toFixed(2) });
+}
+
 function toggleSidebar() {
   state.sidebarOpen = !state.sidebarOpen;
   persistPreferences();
@@ -387,7 +423,7 @@ function fileLoader() {
       </label>
       <label class="file-control">
         <span>Scoring</span>
-        <input id="scoring-file" type="file" accept=".xml,.XML,.xlsx,.XLSX,.xls,.XLS,.csv,.CSV,.tsv,.TSV,.txt" />
+        <input id="scoring-file" type="file" accept=".rml,.RML,.xml,.XML,.xlsx,.XLSX,.xls,.XLS,.csv,.CSV,.tsv,.TSV,.txt" />
       </label>
       <div class="study-summary">
         ${state.study ? `<strong>${escapeHtml(state.study.fileName)}</strong><span>${state.study.channels.length} channels · ${formatDuration(state.study.duration)}${startText ? ` · Start ${escapeHtml(startText)}` : ""}</span>` : "<strong>No study loaded</strong><span>Files are read locally in this browser.</span>"}
@@ -452,8 +488,22 @@ function channelPanel() {
                     <button type="button" class="${scale.mode !== "manual" ? "active" : ""}" data-scale-mode="${channel.id}" data-scale-mode-value="auto">Auto</button>
                     <button type="button" class="${scale.mode === "manual" ? "active" : ""}" data-scale-mode="${channel.id}" data-scale-mode-value="manual">Manual</button>
                   </div>
-                  <label class="${scale.mode === "manual" ? "" : "disabled"}" title="Manual full-scale amplitude range"><span>Range</span><input type="number" step="0.01" value="${escapeHtml(scale.range)}" data-range="${channel.id}" ${scale.mode === "manual" ? "" : "disabled"} /></label>
-                  <label class="${scale.mode === "manual" ? "" : "disabled"}" title="Manual center value"><span>Center</span><input type="number" step="0.01" value="${escapeHtml(scale.center)}" data-center="${channel.id}" ${scale.mode === "manual" ? "" : "disabled"} /></label>
+                  <div class="scale-field ${scale.mode === "manual" ? "" : "disabled"}" title="Manual full-scale amplitude range">
+                    <span>Range</span>
+                    <div class="scale-stepper" aria-label="Manual range for ${escapeHtml(channel.label)}">
+                      <button type="button" data-scale-step="${channel.id}" data-scale-field="range" data-scale-delta="-${MANUAL_SCALE_STEP}" ${scale.mode === "manual" ? "" : "disabled"}>-</button>
+                      <input type="text" inputmode="decimal" value="${escapeHtml(scale.range)}" data-scale-input="${channel.id}" data-scale-field="range" ${scale.mode === "manual" ? "" : "disabled"} />
+                      <button type="button" data-scale-step="${channel.id}" data-scale-field="range" data-scale-delta="${MANUAL_SCALE_STEP}" ${scale.mode === "manual" ? "" : "disabled"}>+</button>
+                    </div>
+                  </div>
+                  <div class="scale-field ${scale.mode === "manual" ? "" : "disabled"}" title="Manual center value">
+                    <span>Center</span>
+                    <div class="scale-stepper" aria-label="Manual center for ${escapeHtml(channel.label)}">
+                      <button type="button" data-scale-step="${channel.id}" data-scale-field="center" data-scale-delta="-${MANUAL_SCALE_STEP}" ${scale.mode === "manual" ? "" : "disabled"}>-</button>
+                      <input type="text" inputmode="decimal" value="${escapeHtml(scale.center)}" data-scale-input="${channel.id}" data-scale-field="center" ${scale.mode === "manual" ? "" : "disabled"} />
+                      <button type="button" data-scale-step="${channel.id}" data-scale-field="center" data-scale-delta="${MANUAL_SCALE_STEP}" ${scale.mode === "manual" ? "" : "disabled"}>+</button>
+                    </div>
+                  </div>
                 </div>
               ` : ""}
             </article>
@@ -585,21 +635,31 @@ function bindEvents() {
   document.querySelectorAll("[data-scale-mode]").forEach((input) => {
     input.addEventListener("click", () => {
       const channelId = Number(input.dataset.scaleMode);
-      const channelWindow = state.signalWindow?.channels.find((candidate) => candidate.channelId === channelId);
-      const visibleMin = channelWindow?.visibleMin ?? 0;
-      const visibleMax = channelWindow?.visibleMax ?? 1;
+      const defaults = scaleDefaults(channelId);
       updateScale(channelId, {
         mode: input.dataset.scaleModeValue === "manual" ? "manual" : "auto",
-        range: Math.max(0.1, visibleMax - visibleMin).toFixed(2),
-        center: ((visibleMax + visibleMin) / 2).toFixed(2)
+        range: defaults.range.toFixed(2),
+        center: defaults.center.toFixed(2)
       });
     });
   });
-  document.querySelectorAll("[data-range]").forEach((input) => {
-    input.addEventListener("input", () => updateScale(Number(input.dataset.range), { mode: "manual", range: Number(input.value) }));
+  document.querySelectorAll("[data-scale-input]").forEach((input) => {
+    input.addEventListener("input", () => {
+      updateScaleDraft(Number(input.dataset.scaleInput), {
+        mode: "manual",
+        [input.dataset.scaleField]: input.value
+      });
+    });
+    input.addEventListener("change", () => commitScaleDraft());
+    input.addEventListener("blur", () => commitScaleDraft());
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") input.blur();
+    });
   });
-  document.querySelectorAll("[data-center]").forEach((input) => {
-    input.addEventListener("input", () => updateScale(Number(input.dataset.center), { mode: "manual", center: Number(input.value) }));
+  document.querySelectorAll("[data-scale-step]").forEach((button) => {
+    button.addEventListener("click", () => {
+      nudgeScale(Number(button.dataset.scaleStep), button.dataset.scaleField, Number(button.dataset.scaleDelta));
+    });
   });
   document.querySelectorAll("[data-event-key]").forEach((input) => {
     input.addEventListener("change", () => toggleEventVisibility(input.dataset.eventKey, input.checked));

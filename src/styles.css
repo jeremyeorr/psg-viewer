@@ -259,15 +259,16 @@ p {
   padding-top: 2px;
 }
 
-.scale-controls label {
+.scale-field {
   display: grid;
   grid-template-columns: 38px minmax(0, 1fr);
   gap: 6px;
+  align-items: center;
   color: #667085;
   font-size: 10px;
 }
 
-.scale-controls label.disabled {
+.scale-field.disabled {
   opacity: 0.55;
 }
 
@@ -295,12 +296,42 @@ p {
   color: #ffffff;
 }
 
-.scale-controls input[type="number"] {
+.scale-stepper {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) 30px;
+  gap: 4px;
   min-width: 0;
-  height: 24px;
+}
+
+.scale-stepper button {
+  width: 30px;
+  height: 28px;
+  border: 1px solid #98a2b3;
+  border-radius: 5px;
+  background: #ffffff;
+  color: #344054;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+}
+
+.scale-stepper button:active {
+  background: #eaf2fb;
+}
+
+.scale-stepper button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.scale-stepper input {
+  min-width: 0;
+  height: 28px;
   border: 1px solid #d0d5dd;
   border-radius: 5px;
-  padding: 0 5px;
+  padding: 0 6px;
+  font-size: 11px;
 }
 
 .bulk-actions {
