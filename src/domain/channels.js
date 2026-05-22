@@ -83,6 +83,47 @@ export function orderChannelsForPsg(channels) {
   });
 }
 
+export function applyChannelOrder(channels, channelOrder = []) {
+  const defaultOrdered = orderChannelsForPsg(channels);
+  const byId = new Map(defaultOrdered.map((channel) => [channel.id, channel]));
+  const used = new Set();
+  const ordered = [];
+
+  for (const rawId of channelOrder || []) {
+    const id = Number(rawId);
+    if (!byId.has(id) || used.has(id)) continue;
+    ordered.push(byId.get(id));
+    used.add(id);
+  }
+
+  for (const channel of defaultOrdered) {
+    if (!used.has(channel.id)) ordered.push(channel);
+  }
+
+  return ordered;
+}
+
+export function moveChannelInOrder(channels, channelOrder, draggedId, targetId) {
+  const orderedIds = applyChannelOrder(channels, channelOrder).map((channel) => channel.id);
+  const fromIndex = orderedIds.indexOf(Number(draggedId));
+  if (fromIndex === -1) return orderedIds;
+
+  const [moved] = orderedIds.splice(fromIndex, 1);
+  if (targetId === null || targetId === undefined) {
+    orderedIds.push(moved);
+    return orderedIds;
+  }
+
+  const insertIndex = orderedIds.indexOf(Number(targetId));
+  if (insertIndex === -1) {
+    orderedIds.splice(fromIndex, 0, moved);
+    return orderedIds;
+  }
+
+  orderedIds.splice(insertIndex, 0, moved);
+  return orderedIds;
+}
+
 export function defaultVisibleChannelIds(channels) {
   const selected = [];
   const used = new Set();

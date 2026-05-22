@@ -260,7 +260,7 @@ function drawPosition(context, width, startSeconds, durationSeconds, scoring, re
   }
 }
 
-function drawWaveformLane(context, lane, channel, windowChannel, width, index, scaleState, laneHeight) {
+function drawWaveformLane(context, lane, channel, windowChannel, width, index, scaleState, laneHeight, regions) {
   const top = WAVEFORM_TOP + index * laneHeight;
   const mid = top + laneHeight / 2;
   const plotLeft = LEFT_GUTTER;
@@ -293,11 +293,17 @@ function drawWaveformLane(context, lane, channel, windowChannel, width, index, s
   context.moveTo(plotLeft, mid + 0.5);
   context.lineTo(width - 18, mid + 0.5);
   context.stroke();
+  addRegion(regions, channel, 0, top, LEFT_GUTTER, laneHeight, `Drag ${channel.label} to reorder`, "channel");
+
+  const labelY = top + (laneHeight < 20 ? laneHeight / 2 : laneHeight < 48 ? laneHeight / 2 - 5 : 28);
+  context.fillStyle = "#98a2b3";
+  context.font = laneHeight < 20 ? "600 8px system-ui, sans-serif" : "600 12px system-ui, sans-serif";
+  context.fillText("::", 6, labelY);
 
   context.fillStyle = "#101828";
   context.font = laneHeight < 20 ? "600 8px system-ui, sans-serif" : laneHeight < 48 ? "600 10px system-ui, sans-serif" : "600 12px system-ui, sans-serif";
   context.textBaseline = "middle";
-  context.fillText(channel.label, 16, top + (laneHeight < 20 ? laneHeight / 2 : laneHeight < 48 ? laneHeight / 2 - 5 : 28));
+  context.fillText(channel.label, 22, labelY);
   context.fillStyle = "#667085";
   context.font = laneHeight < 48 ? "9px system-ui, sans-serif" : "11px system-ui, sans-serif";
   if (laneHeight < 20) {
@@ -384,7 +390,8 @@ export function renderPsgCanvas(canvas, state) {
       width,
       index,
       state.channelScale[channel.id],
-      laneHeight
+      laneHeight,
+      regions
     );
   });
 

@@ -1,4 +1,4 @@
-import { clamp, defaultVisibleChannelIds, formatDuration, orderChannelsForPsg, ZOOM_WINDOWS, DEFAULT_ZOOM_SECONDS } from "./domain/channels.js?v=20260522-night";
+import { applyChannelOrder, clamp, defaultVisibleChannelIds, formatDuration, moveChannelInOrder, ZOOM_WINDOWS, DEFAULT_ZOOM_SECONDS } from "./domain/channels.js?v=20260522-lane-reorder";
 import { EdfWorkerClient } from "./edf/edfClient.js";
 import { importScoring } from "./scoring/importers.js";
 import { loadPreferences, savePreferences } from "./viewer/preferences.js";
@@ -12,6 +12,7 @@ const state = {
   study: null,
   scoring: null,
   visibleChannelIds: preferences.visibleChannelIds || [],
+  channelOrder: preferences.channelOrder || [],
   zoomSeconds: preferences.zoomSeconds || DEFAULT_ZOOM_SECONDS,
   startSeconds: 0,
   signalWindow: null,
@@ -27,6 +28,7 @@ const state = {
 let canvas = null;
 let renderQueued = false;
 let dragStart = null;
+let laneDrag = null;
 let canvasRegions = [];
 let sidebarScrollTop = 0;
 
@@ -69,7 +71,12 @@ function restoreSidebarScroll() {
 function visibleChannels() {
   if (!state.study) return [];
   const ids = new Set(state.visibleChannelIds);
-  return orderChannelsForPsg(state.study.channels.filter((channel) => ids.has(channel.id)));
+  return orderedChannels().filter((channel) => ids.has(channel.id));
+}
+
+function orderedChannels() {
+  if (!state.study) return [];
+  return applyChannelOrder(state.study.channels, state.channelOrder);
 }
 
 function formatClockAt(seconds) {
@@ -139,6 +146,7 @@ function visibleScoring() {
 function persistPreferences() {
   savePreferences({
     visibleChannelIds: state.visibleChannelIds,
+    channelOrder: state.channelOrder,
     zoomSeconds: state.zoomSeconds,
     channelScale: state.channelScale,
     eventVisibility: state.eventVisibility,
@@ -152,8 +160,10 @@ async function loadEdf(file) {
   try {
     const study = await edfClient.loadStudy(file);
     const visibleChannelIds = preferences.visibleChannelIds?.length ? preferences.visibleChannelIds : defaultVisibleChannelIds(study.channels);
+    const channelOrder = applyChannelOrder(study.channels, preferences.channelOrder).map((channel) => channel.id);
     setState({
       study,
+      channelOrder,
       visibleChannelIds: visibleChannelIds.filter((id) => study.channels.some((channel) => channel.id === id)),
       startSeconds: 0,
       warnings: study.warnings,
@@ -225,10 +235,63 @@ function toggleChannel(id, checked) {
   const ids = new Set(state.visibleChannelIds);
   if (checked) ids.add(id);
   else ids.delete(id);
-  state.visibleChannelIds = state.study.channels.map((channel) => channel.id).filter((id) => ids.has(id));
+  state.visibleChannelIds = orderedChannels().map((channel) => channel.id).filter((id) => ids.has(id));
   persistPreferences();
   requestWindow();
   queueRender();
+}
+
+function reorderChannel(draggedId, targetId) {
+  if (!state.study) return;
+  if (targetId !== null && targetId !== undefined && Number(draggedId) === Number(targetId)) return;
+  rememberSidebarScroll();
+  state.channelOrder = moveChannelInOrder(state.study.channels, state.channelOrder, draggedId, targetId);
+  const visible = new Set(state.visibleChannelIds);
+  state.visibleChannelIds = state.channelOrder.filter((id) => visible.has(id));
+  persistPreferences();
+  requestWindow();
+  queueRender();
+}
+
+function channelRegions() {
+  return canvasRegions
+    .filter((region) => region.kind === "channel")
+    .sort((a, b) => a.y - b.y);
+}
+
+function channelRegionAt(event) {
+  if (!canvas) return null;
+  const rect = canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  return channelRegions().find((region) =>
+    x >= region.x && x <= region.x + region.width && y >= region.y && y <= region.y + region.height
+  ) || null;
+}
+
+function channelDropTargetAt(event) {
+  if (!canvas) return { beforeId: null, y: 0 };
+  const rect = canvas.getBoundingClientRect();
+  const y = event.clientY - rect.top;
+  const regions = channelRegions();
+  const target = regions.find((region) => y < region.y + region.height / 2);
+  if (target) return { beforeId: target.item.id, y: target.y };
+  const last = regions[regions.length - 1];
+  return {
+    beforeId: null,
+    y: last ? last.y + last.height : 0
+  };
+}
+
+function showLaneDropIndicator(y) {
+  const indicator = document.querySelector("#lane-drop-indicator");
+  if (!indicator) return;
+  indicator.classList.remove("hidden");
+  indicator.style.top = `${Math.max(0, y)}px`;
+}
+
+function hideLaneDropIndicator() {
+  document.querySelector("#lane-drop-indicator")?.classList.add("hidden");
 }
 
 function updateScale(channelId, patch) {
@@ -358,7 +421,7 @@ function controls() {
 }
 
 function channelPanel() {
-  const channels = state.study ? orderChannelsForPsg(state.study.channels) : [];
+  const channels = state.study ? orderedChannels() : [];
   const visible = new Set(state.visibleChannelIds);
   if (!channels.length) {
     return `<aside class="sidebar"><div class="empty">Load an EDF file to choose channels.</div></aside>`;
@@ -375,10 +438,12 @@ function channelPanel() {
           const scale = { mode: "auto", range: "", center: "", ...(state.channelScale[channel.id] || {}) };
           return `
             <article class="channel-row ${channel.isAnnotation ? "muted" : ""}">
-              <label>
+              <div class="channel-main">
+                <label>
                 <input type="checkbox" data-channel="${channel.id}" ${checked ? "checked" : ""} ${channel.isAnnotation ? "disabled" : ""} />
                 <span>${escapeHtml(channel.label)}</span>
-              </label>
+                </label>
+              </div>
               <small>${channel.sampleRate.toFixed(channel.sampleRate >= 10 ? 0 : 1)} Hz ${channel.units ? `· ${escapeHtml(channel.units)}` : ""}</small>
               ${checked ? `
                 <div class="scale-controls">
@@ -464,6 +529,7 @@ function render() {
           <div class="canvas-wrap">
             <canvas id="psg-canvas" tabindex="0" aria-label="PSG waveform viewer"></canvas>
             <div id="time-cursor" class="time-cursor hidden"><span id="time-cursor-label"></span></div>
+            <div id="lane-drop-indicator" class="lane-drop-indicator hidden"></div>
             <div id="canvas-tooltip" class="canvas-tooltip hidden"></div>
           </div>
           ${statusPanel()}
@@ -551,11 +617,31 @@ function bindEvents() {
   }, { passive: false });
   activeCanvas?.addEventListener("pointerdown", (event) => {
     hideTooltip();
+    const channelRegion = channelRegionAt(event);
+    if (channelRegion && event.button === 0) {
+      activeCanvas.setPointerCapture(event.pointerId);
+      const target = channelDropTargetAt(event);
+      laneDrag = {
+        channelId: channelRegion.item.id,
+        targetBeforeId: target.beforeId,
+        pointerId: event.pointerId
+      };
+      activeCanvas.classList.add("reordering-lanes");
+      showLaneDropIndicator(target.y);
+      return;
+    }
     activeCanvas.setPointerCapture(event.pointerId);
     dragStart = { x: event.clientX, start: state.startSeconds };
   });
   activeCanvas?.addEventListener("pointermove", (event) => {
     updateTimeCursor(event);
+    if (laneDrag) {
+      const target = channelDropTargetAt(event);
+      laneDrag.targetBeforeId = target.beforeId;
+      showLaneDropIndicator(target.y);
+      hideTooltip();
+      return;
+    }
     if (!dragStart) {
       const region = findHoverRegion(event);
       if (region) showTooltip(event, region);
@@ -568,10 +654,20 @@ function bindEvents() {
     setStartSeconds(dragStart.start - (dx / width) * state.zoomSeconds);
   });
   activeCanvas?.addEventListener("pointerup", () => {
+    if (laneDrag) {
+      reorderChannel(laneDrag.channelId, laneDrag.targetBeforeId);
+      laneDrag = null;
+      activeCanvas.classList.remove("reordering-lanes");
+      hideLaneDropIndicator();
+      return;
+    }
     dragStart = null;
   });
   activeCanvas?.addEventListener("pointerleave", () => {
     dragStart = null;
+    laneDrag = null;
+    activeCanvas.classList.remove("reordering-lanes");
+    hideLaneDropIndicator();
     hideTooltip();
     hideTimeCursor();
   });

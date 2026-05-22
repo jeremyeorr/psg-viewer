@@ -230,6 +230,10 @@ p {
   opacity: 0.55;
 }
 
+.channel-main {
+  min-width: 0;
+}
+
 .channel-row label {
   display: flex;
   align-items: center;
@@ -328,6 +332,35 @@ canvas {
 
 canvas:active {
   cursor: grabbing;
+}
+
+canvas.reordering-lanes {
+  cursor: ns-resize;
+}
+
+.lane-drop-indicator {
+  position: absolute;
+  left: 0;
+  right: 18px;
+  height: 0;
+  border-top: 2px solid #245a95;
+  pointer-events: none;
+  z-index: 9;
+}
+
+.lane-drop-indicator::before {
+  content: "";
+  position: absolute;
+  left: 146px;
+  top: -5px;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #245a95;
+}
+
+.lane-drop-indicator.hidden {
+  display: none;
 }
 
 .canvas-tooltip {
