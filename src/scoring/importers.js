@@ -1,7 +1,8 @@
-import { normalizeRows } from "./normalize.js?v=20260522-rml2";
-import { parseRmlScoring } from "./rmlImporter.js?v=20260522-rml2";
-import { parseXmlScoring } from "./xmlImporter.js?v=20260522-rml2";
-import { parseXlsxScoring } from "./xlsxImporter.js?v=20260522-rml2";
+import { normalizeRows } from "./normalize.js?v=20260522-xdf";
+import { parseRmlScoring } from "./rmlImporter.js?v=20260522-xdf";
+import { parseXdfScoring } from "./xdfImporter.js?v=20260522-xdf";
+import { parseXmlScoring } from "./xmlImporter.js?v=20260522-xdf";
+import { parseXlsxScoring } from "./xlsxImporter.js?v=20260522-xdf";
 
 function parseDelimited(text, delimiter) {
   const rows = [];
@@ -53,6 +54,11 @@ export const scoringImporters = [
     parse: parseRmlScoring
   },
   {
+    name: "Polysmith XDF",
+    canRead: (file) => /\.xdf$/i.test(file.name || ""),
+    parse: parseXdfScoring
+  },
+  {
     name: "XML",
     canRead: (file) => /\.xml$/i.test(file.name || "") || /xml/i.test(file.type || ""),
     parse: parseXmlScoring
@@ -76,7 +82,7 @@ export const scoringImporters = [
 export async function importScoring(file) {
   const importer = scoringImporters.find((candidate) => candidate.canRead(file));
   if (!importer) {
-    throw new Error("Unsupported scoring format. Use RML, XML, XLSX, XLS, CSV, or TSV.");
+    throw new Error("Unsupported scoring format. Use XDF, RML, XML, XLSX, XLS, CSV, or TSV.");
   }
   return importer.parse(file);
 }

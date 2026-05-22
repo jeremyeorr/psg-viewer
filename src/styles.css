@@ -54,6 +54,11 @@ p {
   font-size: 13px;
 }
 
+.compatibility-line {
+  color: #475467;
+  font-size: 12px;
+}
+
 .toolbar,
 .controls {
   display: flex;

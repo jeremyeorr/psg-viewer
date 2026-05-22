@@ -1,6 +1,6 @@
 import { applyChannelOrder, clamp, defaultVisibleChannelIds, formatDuration, moveChannelInOrder, ZOOM_WINDOWS, DEFAULT_ZOOM_SECONDS } from "./domain/channels.js?v=20260522-alpha-sidebar";
 import { EdfWorkerClient } from "./edf/edfClient.js";
-import { importScoring } from "./scoring/importers.js?v=20260522-rml2";
+import { importScoring } from "./scoring/importers.js?v=20260522-xdf";
 import { loadPreferences, savePreferences } from "./viewer/preferences.js";
 import { renderPsgCanvas } from "./viewer/canvasRenderer.js";
 
@@ -99,7 +99,8 @@ function formatClockAt(seconds) {
 function alignScoringToEdfClock(scoring = state.scoring, study = state.study) {
   if (!scoring) return null;
   const recordingStartMs = Date.parse(study?.recordingStart || "");
-  if (scoring.timing?.type !== "excelSerial" || !Number.isFinite(recordingStartMs)) return scoring;
+  const hasAbsoluteTiming = ["absolute", "excelSerial"].includes(scoring.timing?.type);
+  if (!hasAbsoluteTiming || !Number.isFinite(recordingStartMs)) return scoring;
   const alignItem = (item) => {
     let absoluteUnixMs = Number.isFinite(item.absoluteUnixMs) ? item.absoluteUnixMs : null;
     if (absoluteUnixMs === null && Number.isFinite(item.sourceOnset) && item.sourceOnset > 20000) {
@@ -431,7 +432,7 @@ function fileLoader() {
       </label>
       <label class="file-control">
         <span>Scoring</span>
-        <input id="scoring-file" type="file" accept=".rml,.RML,.xml,.XML,.xlsx,.XLSX,.xls,.XLS,.csv,.CSV,.tsv,.TSV,.txt" />
+        <input id="scoring-file" type="file" accept=".xdf,.XDF,.rml,.RML,.xml,.XML,.xlsx,.XLSX,.xls,.XLS,.csv,.CSV,.tsv,.TSV,.txt" />
       </label>
       <div class="study-summary">
         ${state.study ? `<strong>${escapeHtml(state.study.fileName)}</strong><span>${state.study.channels.length} channels · ${formatDuration(state.study.duration)}${startText ? ` · Start ${escapeHtml(startText)}` : ""}</span>` : "<strong>No study loaded</strong><span>Files are read locally in this browser.</span>"}
@@ -577,6 +578,7 @@ function render() {
         <div>
           <h1>PSG Viewer</h1>
           <p>Local EDF/EDF+ waveform review with scoring overlays.</p>
+          <p class="compatibility-line">Compatible exports: Nox/Noxturnal XLS, Sleepware G3 RML, Nihon Kohden Polysmith XDF.</p>
         </div>
       </header>
       ${fileLoader()}

@@ -5,7 +5,7 @@ A lightweight, local-only browser viewer for polysomnography review. The app loa
 ## Current Features
 
 - Local browser file loading for EDF/EDF+ signals.
-- Scoring import for RML, XML, XLS, XLSX, CSV, TSV, and TXT tabular files.
+- Scoring import for XDF, RML, XML, XLS, XLSX, CSV, TSV, and TXT tabular files.
 - Absolute clock-time alignment between EDF start time and scoring timestamps.
 - Standard PSG display order with four EEG channels and two EOG channels when available.
 - Channel sidebar with visibility toggles, autoscaling, and manual range/center controls.
@@ -57,6 +57,7 @@ Validated:
 
 - Nox / Noxturnal: EDF signal export with XLS scoring export.
 - Philips Respironics Sleepware G3: EDF signal export with RML scoring export. The RML importer reads Sleepware stages, respiratory events, arousals, comments, SpO2 desaturation events, limb events, and body-position overrides. The `*-AT.xml` file seen in one sample appears to be an audit log, not a scoring file.
+- Nihon Kohden Polysmith: EDF signal export with XDF scoring export. The XDF importer reads Polysmith sleep stages, apneas, hypopneas, SpO2 desaturation events, arousals, limb movements, snores, notes, and arrhythmia markers.
 
 ## Timing Model
 
@@ -77,6 +78,7 @@ The current tests cover:
 - Min/max downsampling.
 - XML and tabular scoring normalization.
 - Sleepware RML scoring normalization.
+- Polysmith XDF scoring normalization.
 - Excel serial timestamp preservation for EDF alignment.
 - Default PSG channel ordering.
 
@@ -104,7 +106,7 @@ Not included yet:
 ## Implementation Notes
 
 - `src/edf/` contains EDF parsing, windowed signal reads, and the Web Worker client.
-- `src/scoring/` contains XML, XLS, XLSX, CSV/TSV import and scoring normalization.
+- `src/scoring/` contains XDF, RML, XML, XLS, XLSX, CSV/TSV import and scoring normalization.
 - `src/domain/channels.js` contains PSG channel classification, display ordering, and zoom presets.
 - `src/viewer/canvasRenderer.js` contains the canvas waveform and overlay renderer.
 - `src/main.js` wires the UI, browser state, preferences, and viewer interactions.
