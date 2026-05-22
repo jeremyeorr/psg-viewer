@@ -1,4 +1,4 @@
-import { applyChannelOrder, clamp, defaultVisibleChannelIds, formatDuration, moveChannelInOrder, ZOOM_WINDOWS, DEFAULT_ZOOM_SECONDS } from "./domain/channels.js?v=20260522-scale";
+import { applyChannelOrder, clamp, defaultVisibleChannelIds, formatDuration, moveChannelInOrder, ZOOM_WINDOWS, DEFAULT_ZOOM_SECONDS } from "./domain/channels.js?v=20260522-alpha-sidebar";
 import { EdfWorkerClient } from "./edf/edfClient.js";
 import { importScoring } from "./scoring/importers.js?v=20260522-rml2";
 import { loadPreferences, savePreferences } from "./viewer/preferences.js";
@@ -78,6 +78,14 @@ function visibleChannels() {
 function orderedChannels() {
   if (!state.study) return [];
   return applyChannelOrder(state.study.channels, state.channelOrder);
+}
+
+function alphabetizedChannels() {
+  if (!state.study) return [];
+  return [...state.study.channels].sort((a, b) => {
+    const byLabel = a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: "base" });
+    return byLabel || a.id - b.id;
+  });
 }
 
 function formatClockAt(seconds) {
@@ -457,7 +465,7 @@ function controls() {
 }
 
 function channelPanel() {
-  const channels = state.study ? orderedChannels() : [];
+  const channels = state.study ? alphabetizedChannels() : [];
   const visible = new Set(state.visibleChannelIds);
   if (!channels.length) {
     return `<aside class="sidebar"><div class="empty">Load an EDF file to choose channels.</div></aside>`;
