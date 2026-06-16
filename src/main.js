@@ -35,6 +35,11 @@ let sidebarScrollTop = 0;
 const PLOT_LEFT = 154;
 const PLOT_RIGHT_PADDING = 18;
 const MANUAL_SCALE_STEP = 0.01;
+const KEY_SCROLL_ANIMATION_MS = 1000;
+const KEY_SCROLL_REQUEST_INTERVAL_MS = 120;
+
+let signalRequestSerial = 0;
+let keyScrollFrame = null;
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -201,11 +206,12 @@ async function loadScoring(file) {
 }
 
 async function requestWindow() {
+  const requestSerial = ++signalRequestSerial;
   if (!state.study || !canvas) return;
   const targetPixelWidth = Math.max(300, Math.floor(canvas.parentElement.getBoundingClientRect().width - 172));
   const channelIds = visibleChannels().map((channel) => channel.id);
   if (!channelIds.length) {
-    setState({ signalWindow: null });
+    if (requestSerial === signalRequestSerial) setState({ signalWindow: null });
     return;
   }
   const request = {
@@ -216,21 +222,98 @@ async function requestWindow() {
   };
   try {
     const result = await edfClient.readWindow(request);
+    if (requestSerial !== signalRequestSerial) return;
     setState({ signalWindow: result, warnings: [...(state.study.warnings || []), ...(result.warnings || [])] });
   } catch (error) {
+    if (requestSerial !== signalRequestSerial) return;
     setState({ error: error.message });
   }
 }
 
-function setStartSeconds(nextStart) {
+function setStartSeconds(nextStart, { loadWindow = true } = {}) {
   if (!state.study) return;
   const maxStart = Math.max(0, state.study.duration - state.zoomSeconds);
   state.startSeconds = clamp(nextStart, 0, maxStart);
-  requestWindow();
+  if (loadWindow) requestWindow();
   queueRender();
 }
 
+function cancelKeyScroll() {
+  if (keyScrollFrame !== null) {
+    cancelAnimationFrame(keyScrollFrame);
+    keyScrollFrame = null;
+  }
+}
+
+function easeInOutCubic(progress) {
+  return progress < 0.5
+    ? 4 * progress * progress * progress
+    : 1 - ((-2 * progress + 2) ** 3) / 2;
+}
+
+function scrollByWindow(direction) {
+  if (!state.study) return;
+  cancelKeyScroll();
+  const maxStart = Math.max(0, state.study.duration - state.zoomSeconds);
+  const from = state.startSeconds;
+  const target = clamp(from + direction * state.zoomSeconds, 0, maxStart);
+  if (target === from) return;
+
+  let startedAt = null;
+  let lastWindowRequestAt = 0;
+  const step = (timestamp) => {
+    if (startedAt === null) {
+      startedAt = timestamp;
+      lastWindowRequestAt = timestamp;
+    }
+    const progress = Math.min(1, (timestamp - startedAt) / KEY_SCROLL_ANIMATION_MS);
+    const nextStart = from + (target - from) * easeInOutCubic(progress);
+    setStartSeconds(nextStart, { loadWindow: false });
+
+    if (timestamp - lastWindowRequestAt >= KEY_SCROLL_REQUEST_INTERVAL_MS) {
+      requestWindow();
+      lastWindowRequestAt = timestamp;
+    }
+
+    if (progress < 1) {
+      keyScrollFrame = requestAnimationFrame(step);
+      return;
+    }
+
+    keyScrollFrame = null;
+    setStartSeconds(target);
+  };
+
+  keyScrollFrame = requestAnimationFrame(step);
+}
+
+function isTextEntryTarget(target) {
+  if (!(target instanceof Element)) return false;
+  return Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+}
+
+function handleNavigationKeydown(event) {
+  if (isTextEntryTarget(event.target)) return;
+  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    event.preventDefault();
+    if (!event.repeat) scrollByWindow(event.key === "ArrowLeft" ? -1 : 1);
+    return;
+  }
+  if (event.key === "PageUp") {
+    event.preventDefault();
+    cancelKeyScroll();
+    setStartSeconds(state.startSeconds - state.zoomSeconds);
+    return;
+  }
+  if (event.key === "PageDown") {
+    event.preventDefault();
+    cancelKeyScroll();
+    setStartSeconds(state.startSeconds + state.zoomSeconds);
+  }
+}
+
 function setZoom(value) {
+  cancelKeyScroll();
   const seconds = value === "night" ? state.study?.duration || DEFAULT_ZOOM_SECONDS : Number(value);
   if (!Number.isFinite(seconds) || seconds <= 0) return;
   state.zoomSeconds = seconds;
@@ -246,6 +329,14 @@ function toggleChannel(id, checked) {
   if (checked) ids.add(id);
   else ids.delete(id);
   state.visibleChannelIds = orderedChannels().map((channel) => channel.id).filter((id) => ids.has(id));
+  persistPreferences();
+  requestWindow();
+  queueRender();
+}
+
+function clearSelectedChannels() {
+  rememberSidebarScroll();
+  state.visibleChannelIds = [];
   persistPreferences();
   requestWindow();
   queueRender();
@@ -477,6 +568,9 @@ function channelPanel() {
         <h2>Channels</h2>
         <span>${visible.size}/${channels.filter((channel) => !channel.isAnnotation).length}</span>
       </div>
+      <div class="bulk-actions">
+        <button class="mini-button" data-channels-clear ${visible.size === 0 ? "disabled" : ""}>clear all</button>
+      </div>
       <div class="channel-list">
         ${channels.map((channel) => {
           const checked = visible.has(channel.id);
@@ -536,7 +630,7 @@ function eventsPanel() {
       </div>
       <div class="bulk-actions">
         <button class="mini-button" data-events-all="show">Show all</button>
-        <button class="mini-button" data-events-all="hide">Hide all</button>
+        <button class="mini-button" data-events-all="hide">clear all</button>
       </div>
       <div class="channel-list">
         ${options.map((option) => `
@@ -571,6 +665,7 @@ function statusPanel() {
 }
 
 function render() {
+  const restoreCanvasFocus = document.activeElement?.id === "psg-canvas";
   rememberSidebarScroll();
   app.innerHTML = `
     <main class="shell">
@@ -610,6 +705,7 @@ function render() {
     channelScale: state.channelScale
   });
   canvasRegions = renderResult.regions || [];
+  if (restoreCanvasFocus) canvas.focus({ preventScroll: true });
 }
 
 function bindEvents() {
@@ -633,15 +729,22 @@ function bindEvents() {
     button.addEventListener("click", () => setZoom(button.dataset.zoom));
   });
   document.querySelectorAll("[data-jump]").forEach((button) => {
-    button.addEventListener("click", () => setStartSeconds(state.startSeconds + Number(button.dataset.jump)));
+    button.addEventListener("click", () => {
+      cancelKeyScroll();
+      setStartSeconds(state.startSeconds + Number(button.dataset.jump));
+    });
   });
-  document.querySelector("#timeline")?.addEventListener("input", (event) => setStartSeconds(Number(event.target.value)));
+  document.querySelector("#timeline")?.addEventListener("input", (event) => {
+    cancelKeyScroll();
+    setStartSeconds(Number(event.target.value));
+  });
   document.querySelectorAll("[data-channel]").forEach((input) => {
     input.addEventListener("change", () => {
       rememberSidebarScroll();
       toggleChannel(Number(input.dataset.channel), input.checked);
     });
   });
+  document.querySelector("[data-channels-clear]")?.addEventListener("click", () => clearSelectedChannels());
   document.querySelectorAll("[data-scale-mode]").forEach((input) => {
     input.addEventListener("click", () => {
       const channelId = Number(input.dataset.scaleMode);
@@ -681,11 +784,13 @@ function bindEvents() {
   const activeCanvas = document.querySelector("#psg-canvas");
   activeCanvas?.addEventListener("wheel", (event) => {
     if (!state.study) return;
+    cancelKeyScroll();
     event.preventDefault();
     const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
     setStartSeconds(state.startSeconds + (delta / 300) * state.zoomSeconds);
   }, { passive: false });
   activeCanvas?.addEventListener("pointerdown", (event) => {
+    cancelKeyScroll();
     hideTooltip();
     const channelRegion = channelRegionAt(event);
     if (channelRegion && event.button === 0) {
@@ -741,15 +846,12 @@ function bindEvents() {
     hideTooltip();
     hideTimeCursor();
   });
-  activeCanvas?.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowLeft") setStartSeconds(state.startSeconds - state.zoomSeconds / 4);
-    if (event.key === "ArrowRight") setStartSeconds(state.startSeconds + state.zoomSeconds / 4);
-    if (event.key === "PageUp") setStartSeconds(state.startSeconds - state.zoomSeconds);
-    if (event.key === "PageDown") setStartSeconds(state.startSeconds + state.zoomSeconds);
-  });
 }
 
+document.addEventListener("keydown", handleNavigationKeydown);
+
 window.addEventListener("resize", () => {
+  cancelKeyScroll();
   requestWindow();
   queueRender();
 });

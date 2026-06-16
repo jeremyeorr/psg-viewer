@@ -5,7 +5,7 @@
   "type": "module",
   "description": "A lightweight local browser polysomnography viewer for EDF/EDF+ signals and scoring files.",
   "scripts": {
-    "dev": "python3 -m http.server 5173",
+    "dev": "python3 -m http.server 5173 --bind 127.0.0.1",
     "test": "node --test"
   }
 }
