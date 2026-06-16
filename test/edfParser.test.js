@@ -63,6 +63,52 @@ function makeSyntheticEdf() {
   return buffer;
 }
 
+function makeSingleSignalEdf(samplesPerRecord, values) {
+  const signals = 1;
+  const headerBytes = 256 + signals * 256;
+  const records = Math.ceil(values.length / samplesPerRecord);
+  const recordDuration = 1;
+  const bytesPerRecord = samplesPerRecord * 2;
+  const buffer = new ArrayBuffer(headerBytes + records * bytesPerRecord);
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+
+  writeAscii(bytes, 0, "0", 8);
+  writeAscii(bytes, 8, "TEST PATIENT", 80);
+  writeAscii(bytes, 88, "TEST RECORDING", 80);
+  writeAscii(bytes, 168, "01.01.26", 8);
+  writeAscii(bytes, 176, "22.30.00", 8);
+  writeAscii(bytes, 184, headerBytes, 8);
+  writeAscii(bytes, 192, "", 44);
+  writeAscii(bytes, 236, records, 8);
+  writeAscii(bytes, 244, recordDuration, 8);
+  writeAscii(bytes, 252, signals, 4);
+
+  let offset = 256;
+  const writeArray = (fieldValues, width) => {
+    fieldValues.forEach((value, index) => writeAscii(bytes, offset + index * width, value, width));
+    offset += signals * width;
+  };
+  writeArray(["Fast"], 16);
+  writeArray([""], 80);
+  writeArray(["uV"], 8);
+  writeArray([-1000], 8);
+  writeArray([1000], 8);
+  writeArray([-1000], 8);
+  writeArray([1000], 8);
+  writeArray([""], 80);
+  writeArray([samplesPerRecord], 8);
+  writeArray([""], 32);
+
+  let sampleOffset = headerBytes;
+  for (let index = 0; index < records * samplesPerRecord; index += 1) {
+    view.setInt16(sampleOffset, values[index] ?? 0, true);
+    sampleOffset += 2;
+  }
+
+  return buffer;
+}
+
 test("parseEdfHeader reads metadata and mixed sample rates", () => {
   const study = parseEdfHeader(makeSyntheticEdf(), "synthetic.edf");
   assert.equal(study.fileName, "synthetic.edf");
@@ -93,10 +139,36 @@ test("readSignalWindow decodes only the selected visible interval", async () => 
 
   assert.equal(result.channels.length, 2);
   assert.equal(result.channels[0].samplesRead, 4);
+  assert.equal(result.channels[0].sourceSamples, 4);
+  assert.equal(result.channels[0].displayDownsampled, false);
   assert.equal(result.channels[1].samplesRead, 2);
+  assert.equal(result.channels[1].sourceSamples, 2);
+  assert.equal(result.channels[1].displayDownsampled, false);
   assert.equal(result.bucketCount, 8);
   assert.equal(result.channels[0].visibleMin, 5);
   assert.equal(result.channels[0].visibleMax, 10);
   assert.equal(result.channels[1].visibleMin, 0);
   assert.equal(result.channels[1].visibleMax, 1);
+});
+
+test("readSignalWindow downsamples dense display buckets", async () => {
+  const values = Array.from({ length: 1000 }, (_, index) => index);
+  const buffer = makeSingleSignalEdf(1000, values);
+  const study = parseEdfHeader(buffer, "fast.edf");
+  const blob = new Blob([buffer]);
+  const result = await readSignalWindow(blob, study, {
+    channelIds: [0],
+    startSeconds: 0,
+    durationSeconds: 1,
+    targetPixelWidth: 10
+  });
+
+  assert.equal(result.channels.length, 1);
+  assert.equal(result.bucketCount, 10);
+  assert.equal(result.channels[0].sourceSamples, 1000);
+  assert.equal(result.channels[0].samplesRead, 120);
+  assert.equal(result.channels[0].displayDownsampled, true);
+  assert.equal(result.channels[0].visibleMin, 0);
+  assert.equal(result.channels[0].visibleMax, 999);
+  assert.match(result.warnings.join(" "), /Display downsampled 1 high-rate channel/);
 });

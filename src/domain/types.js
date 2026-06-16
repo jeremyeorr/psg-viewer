@@ -44,6 +44,8 @@
  * @property {number} channelId
  * @property {number} sampleRate
  * @property {number} samplesRead
+ * @property {number} sourceSamples
+ * @property {boolean} displayDownsampled
  * @property {number[]} min
  * @property {number[]} max
  * @property {number} visibleMin

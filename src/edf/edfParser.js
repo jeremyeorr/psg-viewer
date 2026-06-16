@@ -2,6 +2,7 @@ import { normalizeChannelLabel } from "../domain/channels.js";
 
 const FIXED_HEADER_BYTES = 256;
 const EDF_INT16_BYTES = 2;
+const DISPLAY_MAX_SOURCE_SAMPLES_PER_BUCKET = 12;
 
 function ascii(buffer, start, length) {
   const bytes = new Uint8Array(buffer, start, length);
@@ -151,8 +152,49 @@ function createBuckets(bucketCount) {
   return {
     min: Array(bucketCount).fill(Number.POSITIVE_INFINITY),
     max: Array(bucketCount).fill(Number.NEGATIVE_INFINITY),
-    samplesRead: 0
+    samplesRead: 0,
+    sourceSamples: 0
   };
+}
+
+function clampIndex(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function sampleIndexAtOrAfter(recordStart, recordDuration, samplesPerRecord, time) {
+  const sampleIndex = ((time - recordStart) / recordDuration) * samplesPerRecord;
+  return clampIndex(Math.ceil(sampleIndex - 1e-9), 0, samplesPerRecord);
+}
+
+function addSampleToBucket(view, channel, channelOffset, sample, buckets, bucketIndex) {
+  const byteOffset = channelOffset + sample * EDF_INT16_BYTES;
+  if (byteOffset + EDF_INT16_BYTES > view.byteLength) return;
+  const digital = view.getInt16(byteOffset, true);
+  const physical = convertDigitalToPhysical(channel, digital);
+  buckets.min[bucketIndex] = Math.min(buckets.min[bucketIndex], physical);
+  buckets.max[bucketIndex] = Math.max(buckets.max[bucketIndex], physical);
+  buckets.samplesRead += 1;
+}
+
+function addSamplesToBucket(view, channel, channelOffset, firstSample, endSample, buckets, bucketIndex) {
+  const sourceSamples = Math.max(0, endSample - firstSample);
+  if (sourceSamples === 0) return;
+  buckets.sourceSamples += sourceSamples;
+
+  if (sourceSamples <= DISPLAY_MAX_SOURCE_SAMPLES_PER_BUCKET) {
+    for (let sample = firstSample; sample < endSample; sample += 1) {
+      addSampleToBucket(view, channel, channelOffset, sample, buckets, bucketIndex);
+    }
+    return;
+  }
+
+  let previousSample = -1;
+  for (let point = 0; point < DISPLAY_MAX_SOURCE_SAMPLES_PER_BUCKET; point += 1) {
+    const sample = firstSample + Math.round((point / Math.max(1, DISPLAY_MAX_SOURCE_SAMPLES_PER_BUCKET - 1)) * (sourceSamples - 1));
+    if (sample === previousSample) continue;
+    addSampleToBucket(view, channel, channelOffset, sample, buckets, bucketIndex);
+    previousSample = sample;
+  }
 }
 
 export async function readSignalWindow(file, study, request) {
@@ -183,19 +225,23 @@ export async function readSignalWindow(file, study, request) {
     for (const channel of channels) {
       const buckets = bucketsByChannel.get(channel.id);
       const samples = channel.samplesPerRecord;
+      if (samples <= 0) continue;
       const channelOffset = recordOffset + channel.byteOffsetInRecord;
+      const visibleStart = Math.max(startSeconds, recordStart);
+      const visibleEnd = Math.min(endSeconds, recordStart + study.recordDuration);
+      if (visibleEnd <= visibleStart) continue;
 
-      for (let sample = 0; sample < samples; sample += 1) {
-        const sampleTime = recordStart + (sample / samples) * study.recordDuration;
-        if (sampleTime < startSeconds || sampleTime >= endSeconds) continue;
-        const byteOffset = channelOffset + sample * EDF_INT16_BYTES;
-        if (byteOffset + EDF_INT16_BYTES > view.byteLength) continue;
-        const digital = view.getInt16(byteOffset, true);
-        const physical = convertDigitalToPhysical(channel, digital);
-        const bucketIndex = Math.min(bucketCount - 1, Math.max(0, Math.floor(((sampleTime - startSeconds) / durationSeconds) * bucketCount)));
-        buckets.min[bucketIndex] = Math.min(buckets.min[bucketIndex], physical);
-        buckets.max[bucketIndex] = Math.max(buckets.max[bucketIndex], physical);
-        buckets.samplesRead += 1;
+      const firstBucket = clampIndex(Math.floor(((visibleStart - startSeconds) / durationSeconds) * bucketCount), 0, bucketCount - 1);
+      const lastBucket = clampIndex(Math.ceil(((visibleEnd - startSeconds) / durationSeconds) * bucketCount) - 1, firstBucket, bucketCount - 1);
+
+      for (let bucketIndex = firstBucket; bucketIndex <= lastBucket; bucketIndex += 1) {
+        const bucketStart = startSeconds + (bucketIndex / bucketCount) * durationSeconds;
+        const bucketEnd = startSeconds + ((bucketIndex + 1) / bucketCount) * durationSeconds;
+        const overlapStart = Math.max(visibleStart, bucketStart);
+        const overlapEnd = Math.min(visibleEnd, bucketEnd);
+        const firstSample = sampleIndexAtOrAfter(recordStart, study.recordDuration, samples, overlapStart);
+        const endSample = sampleIndexAtOrAfter(recordStart, study.recordDuration, samples, overlapEnd);
+        addSamplesToBucket(view, channel, channelOffset, firstSample, endSample, buckets, bucketIndex);
       }
     }
   }
@@ -225,12 +271,19 @@ export async function readSignalWindow(file, study, request) {
       channelId: channel.id,
       sampleRate: channel.sampleRate,
       samplesRead: buckets.samplesRead,
+      sourceSamples: buckets.sourceSamples,
+      displayDownsampled: buckets.samplesRead < buckets.sourceSamples,
       min: buckets.min,
       max: buckets.max,
       visibleMin,
       visibleMax
     };
   });
+
+  const downsampledCount = resultChannels.filter((channel) => channel.displayDownsampled).length;
+  if (downsampledCount > 0) {
+    warnings.push(`Display downsampled ${downsampledCount} high-rate channel${downsampledCount === 1 ? "" : "s"} to keep waveform loading responsive.`);
+  }
 
   return {
     startSeconds,
